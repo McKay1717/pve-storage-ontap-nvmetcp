@@ -117,7 +117,8 @@ sub _ontap_to_pve {
     my ($ontap_name, $prefix) = @_;
 
     $prefix //= '';
-    (my $pve_name = $ontap_name) =~ s/^\Q$prefix\E// if $prefix;
+    my $pve_name = $ontap_name;
+    $pve_name =~ s/^\Q$prefix\E// if $prefix;
     $pve_name =~ s/^vm_([0-9]+)_disk_([0-9]+)$/vm-$1-disk-$2/;
     $pve_name =~ s/^vm_([0-9]+)_state_(.+)$/vm-$1-state-$2/;
 
