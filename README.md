@@ -67,6 +67,12 @@ dpkg -i pve-storage-ontap-nvmetcp_1.0-1_all.deb
 
 ### Add storage
 
+> [!NOTE]
+> **Adding this storage via the Proxmox web GUI is not supported.** Custom
+> storage plugins can only be added from the command line with `pvesm add`.
+> Once added, the storage is visible and usable in the GUI (disk creation,
+> snapshots, resize, etc.).
+
 ```bash
 pvesm add ontapnvme myontap \
     --mgmt_ip 10.0.0.1 \
