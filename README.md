@@ -42,7 +42,7 @@ to enable atomic multi-disk snapshot operations.
 
 | Component             | Recommended                |
 |-----------------------|----------------------------|
-| **NetApp ONTAP**      | 9.12.1+ ²                 |
+| **NetApp ONTAP**      | 9.12.1+                   |
 | **Proxmox VE**        | 9.x (APIVER 13)           |
 
 ## Installation
