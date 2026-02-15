@@ -1,0 +1,16 @@
+Package: pve-storage-ontap-nvmetcp
+Version: @@VERSION@@-@@PKGRELEASE@@
+Architecture: @@ARCH@@
+Maintainer: Nicolas I. (McKay1717) <https://github.com/McKay1717>
+Depends: perl, libpve-storage-perl, libjson-perl, libwww-perl, liburi-perl, nvme-cli
+Section: admin
+Priority: optional
+Homepage: https://github.com/McKay1717
+Description: Proxmox VE storage plugin for NetApp ONTAP NVMe/TCP
+ Exposes NetApp ONTAP NVMe namespaces as direct block devices for
+ Proxmox VE virtual machines over NVMe/TCP.
+ .
+ Architecture: 1 VM disk = 1 NVMe namespace = 1 FlexVol volume.
+ Multi-disk VMs use ONTAP consistency groups for atomic snapshots.
+ .
+ Requires ONTAP 9.18+ and PVE 9.x (APIVER 13).

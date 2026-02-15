@@ -1,0 +1,22 @@
+pve-storage-ontap-nvmetcp (1.0-1) stable; urgency=medium
+
+  * Initial release.
+  * ONTAP REST API client for NVMe namespace, volume, subsystem,
+    consistency group, and snapshot management (ONTAP 9.18+).
+  * PVE storage plugin implementing APIVER 13:
+    - alloc_image / free_image / list_images
+    - volume snapshots via consistency groups (atomic multi-disk)
+      with per-volume fallback
+    - volume_resize / volume_size_info
+    - qemu_blockdev_options (host_device driver)
+    - volume_qemu_snapshot_method (storage-side)
+    - on_add_hook / on_update_hook / on_delete_hook
+    - sensitive-properties for password isolation
+    - NVMe/TCP auto-discovery via ONTAP data LIFs
+    - Three-strategy NVMe device resolution
+      (ontapdevices, sysfs UUID, nvme-list)
+  * Architecture: 1 VM disk = 1 NVMe namespace = 1 FlexVol volume.
+  * Code formatted with proxmox-perltidy, follows Proxmox Perl
+    Style Guide.
+
+ -- Nicolas I. (McKay1717) <https://github.com/McKay1717>  Sun, 15 Feb 2026 18:00:00 +0100

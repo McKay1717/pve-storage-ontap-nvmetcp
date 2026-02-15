@@ -1,0 +1,2 @@
+activate-noawait ldconfig
+interest-noawait /usr/share/perl5/PVE/Storage/Custom

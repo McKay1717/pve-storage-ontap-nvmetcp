@@ -1,0 +1,43 @@
+# Proxmox-compatible perltidy configuration
+# Based on https://pve.proxmox.com/wiki/Perl_Style_Guide
+# Run: proxmox-perltidy <file>  (preferred)
+# Or:  perltidy --profile=.perltidyrc -b <file>
+
+--maximum-line-length=100
+--indent-columns=4
+--continuation-indentation=4
+--default-tabsize=4
+--output-line-ending=unix
+
+# K&R braces, else/elsif on its own line
+--opening-brace-on-new-line=0
+--opening-sub-brace-on-new-line=0
+--cuddled-else=0
+
+# tightness
+--paren-tightness=1
+--brace-tightness=1
+--square-bracket-tightness=1
+--block-brace-tightness=0
+
+# vertical tightness
+--vertical-tightness=0
+--vertical-tightness-closing=0
+
+# whitespace
+--no-space-for-semicolon
+--add-semicolons
+--add-whitespace
+--no-outdent-long-quotes
+
+# blank lines
+--blank-lines-before-subs=1
+--blanks-before-comments
+--maximum-consecutive-blank-lines=1
+
+# in-place with backup
+--backup-and-modify-in-place
+--backup-file-extension=.bak
+
+# do not touch pod
+--no-format-skipping
