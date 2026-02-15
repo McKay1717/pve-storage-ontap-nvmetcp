@@ -1,41 +1,29 @@
-!Build/
-.last_cover_stats
-/META.yml
-/META.json
-/MYMETA.*
-*.o
-*.pm.tdy
-*.bs
+# Build artifacts
+*.deb
+*.tar.gz
+*.buildinfo
+*.changes
+debian_build/
 
-# Devel::Cover
-cover_db/
+# perltidy backups
+*.bak
+*.tdy
+*.LOG
+*.ERR
 
-# Devel::NYTProf
-nytprof.out
+# Editor files
+*~
+*.swp
+*.swo
+.*.swp
+\#*\#
+.#*
 
-# Dist::Zilla
-/.build/
+# IDE
+.vscode/
+.idea/
+*.iml
 
-# Module::Build
-_build/
-Build
-Build.bat
-
-# Module::Install
-inc/
-
-# ExtUtils::MakeMaker
-/blib/
-/_eumm/
-/*.gz
-/Makefile
-/Makefile.old
-/MANIFEST.bak
-/pm_to_blib
-/*.zip
-
-# Carton/Carmel
-/local/
-/.carmel/
-# cpanfile.snapshot should generally be ignored for library code, otherwise included
-# cpanfile.snapshot 
+# OS
+.DS_Store
+Thumbs.db

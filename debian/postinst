@@ -1,0 +1,14 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "configure" ]; then
+    # reload storage plugin registry
+    if systemctl is-active --quiet pvedaemon.service 2>/dev/null; then
+        systemctl restart pvedaemon.service || true
+    fi
+    if systemctl is-active --quiet pvestatd.service 2>/dev/null; then
+        systemctl restart pvestatd.service || true
+    fi
+fi
+
+#DEBHELPER#
