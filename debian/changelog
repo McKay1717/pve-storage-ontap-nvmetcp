@@ -1,22 +1,27 @@
-pve-storage-ontap-nvmetcp (1.0-1) stable; urgency=medium
+pve-storage-ontap-nvmetcp (1.0-3) stable; urgency=high
 
-  * Initial release.
-  * ONTAP REST API client for NVMe namespace, volume, subsystem,
-    consistency group, and snapshot management (ONTAP 9.18+).
-  * PVE storage plugin implementing APIVER 13:
-    - alloc_image / free_image / list_images
-    - volume snapshots via consistency groups (atomic multi-disk)
-      with per-volume fallback
-    - volume_resize / volume_size_info
-    - qemu_blockdev_options (host_device driver)
-    - volume_qemu_snapshot_method (storage-side)
-    - on_add_hook / on_update_hook / on_delete_hook
-    - sensitive-properties for password isolation
-    - NVMe/TCP auto-discovery via ONTAP data LIFs
-    - Three-strategy NVMe device resolution
-      (ontapdevices, sysfs UUID, nvme-list)
-  * Architecture: 1 VM disk = 1 NVMe namespace = 1 FlexVol volume.
-  * Code formatted with proxmox-perltidy, follows Proxmox Perl
-    Style Guide.
+  * fix: ONTAP REST API pagination — follow _links.next across all
+    paginated responses. list_images was limited to 20 records,
+    causing volumes to be invisible when SVM had >20 objects.
+  * fix: implement clone_image (full clone via dd between NVMe devices)
+    and restore volume_has_feature('copy') to enable VM cloning.
+  * fix: untaint NVMe device paths for Perl taint mode (pvedaemon -T).
+    Paths from nvme-cli JSON, sysfs, and config were tainted, causing
+    "Insecure dependency in exec" errors during clone/qemu-img operations.
+  * fix: untaint NVMe/TCP portal addresses from ONTAP API and config.
+  * fix: ONTAP version requirement 9.18+ → 9.10.1+ in control.in
+    and Api.pm (9.18 does not exist).
+  * fix: missing \n on die in on_add_hook error path.
+  * fix: URI escaping on vol_name, cg_name, subsystem_name in API
+    query strings — prevents malformed HTTP requests with special
+    characters in storage_prefix.
+  * fix: removed unused imports (get_standard_option, trim).
+  * feat: force discard=unmap and detect-zeroes=unmap at QEMU
+    blockdev layer — automatic thin reclaim on ONTAP.
+  * feat: verify_ssl property — TLS certificate verification for
+    ONTAP management connections (default: off).
+  * feat: debug property — configurable debug logging (0/1/2)
+    output to syslog via pvedaemon journal.
+  * doc: added SECURITY.md, GitHub issue templates.
 
- -- Nicolas I. (McKay1717) <https://github.com/McKay1717>  Sun, 15 Feb 2026 18:00:00 +0100
+ -- Nicolas I. (McKay1717) <https://github.com/McKay1717>  Sun, 22 Feb 2026 12:00:00 +0100

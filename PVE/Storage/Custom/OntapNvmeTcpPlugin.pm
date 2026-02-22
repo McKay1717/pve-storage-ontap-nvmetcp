@@ -22,8 +22,8 @@ use IO::Socket::IP;
 use JSON;
 use POSIX qw(strftime);
 
-use PVE::JSONSchema qw(get_standard_option);
-use PVE::Tools qw(run_command file_read_firstline trim);
+use PVE::JSONSchema;
+use PVE::Tools qw(run_command file_read_firstline);
 
 use PVE::Storage::OntapNvmeTcp::Api;
 
@@ -76,11 +76,23 @@ sub _api {
     my ($scfg, $storeid) = @_;
 
     return PVE::Storage::OntapNvmeTcp::Api->new(
-        mgmt_ip  => $scfg->{mgmt_ip},
-        username => $scfg->{username},
-        password => _read_password($storeid),
-        vserver  => $scfg->{vserver},
+        mgmt_ip    => $scfg->{mgmt_ip},
+        username   => $scfg->{username},
+        password   => _read_password($storeid),
+        vserver    => $scfg->{vserver},
+        verify_ssl => $scfg->{verify_ssl},
     );
+}
+
+# -- debug logging -----------------------------------------------------
+
+sub _debug {
+    my ($scfg, $level, $msg) = @_;
+
+    my $debug = $scfg->{debug} // 0;
+    return if $debug < $level;
+
+    warn "ontapnvme :: $msg\n";
 }
 
 # -- host NQN ----------------------------------------------------------
@@ -206,7 +218,8 @@ sub _get_portals {
         my @portals = ($scfg->{ontap_portal});
         push @portals, $scfg->{ontap_portal2}
             if $scfg->{ontap_portal2};
-        return \@portals;
+        # untaint config values (pvedaemon -T)
+        return [ map { /^([0-9a-fA-F.:]+)$/ ? $1 : $_ } @portals ];
     }
 
     my @addrs;
@@ -221,7 +234,8 @@ sub _get_portals {
             . " data LIFs exist.\n";
     }
 
-    return \@addrs;
+    # untaint API-derived addresses (pvedaemon -T)
+    return [ map { /^([0-9a-fA-F.:]+)$/ ? $1 : $_ } @addrs ];
 }
 
 # -- NVMe/TCP connection management ------------------------------------
@@ -340,8 +354,12 @@ sub _find_dev_by_ontapdevices {
             // '';
         my $uuid = $dev->{UUID} // $dev->{uuid} // '';
 
-        return $path if $ns_path && $nspath eq $ns_path;
-        return $path
+        # untaint device path (from external JSON — taint mode)
+        next if $path !~ m{^(/dev/nvme[0-9]+n[0-9]+)$};
+        my $clean_path = $1;
+
+        return $clean_path if $ns_path && $nspath eq $ns_path;
+        return $clean_path
             if $clean_uuid && _normalize_uuid($uuid) eq $clean_uuid;
     }
 
@@ -392,7 +410,8 @@ sub _find_dev_by_nvme_list {
         next if $node !~ m|/dev/(nvme[0-9]+n[0-9]+)|;
         my $name = $1;
 
-        return $node if _match_sysfs_uuid($name, $target);
+        # untaint (from external JSON — taint mode)
+        return "/dev/$name" if _match_sysfs_uuid($name, $target);
     }
 
     return undef;
@@ -610,6 +629,18 @@ sub properties {
             type        => 'string',
             optional    => 1,
         },
+        verify_ssl => {
+            description => "Verify ONTAP TLS certificate (default: 0).",
+            type        => 'boolean',
+            optional    => 1,
+        },
+        debug => {
+            description => "Debug logging level (0=off, 1=basic, 2=verbose).",
+            type        => 'integer',
+            minimum     => 0,
+            maximum     => 2,
+            optional    => 1,
+        },
     };
 }
 
@@ -631,6 +662,8 @@ sub options {
         adaptive_qos_policy => { optional => 1 },
         snapshot_reserve    => { optional => 1 },
         tiering_policy      => { optional => 1 },
+        verify_ssl          => { optional => 1 },
+        debug               => { optional => 1 },
         nodes               => { optional => 1 },
         disable             => { optional => 1 },
         content             => { optional => 1 },
@@ -659,10 +692,11 @@ sub on_add_hook {
 
     eval {
         my $api = PVE::Storage::OntapNvmeTcp::Api->new(
-            mgmt_ip  => $mgmt_ip,
-            username => $username,
-            password => $password,
-            vserver  => $vserver,
+            mgmt_ip    => $mgmt_ip,
+            username   => $username,
+            password   => $password,
+            vserver    => $vserver,
+            verify_ssl => $scfg->{verify_ssl},
         );
         $api->get_svm_uuid();
 
@@ -671,7 +705,7 @@ sub on_add_hook {
     };
     if (my $err = $@) {
         unlink _password_file($storeid);
-        die "ONTAP connection failed: $err";
+        die "ONTAP connection failed: $err\n";
     }
 
     return;
@@ -716,6 +750,7 @@ sub path {
     my ($class, $scfg, $volname, $storeid, $snapname) = @_;
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
+    _debug($scfg, 2, "path($volname, storeid=$storeid)");
     my $api = _api($scfg, $storeid);
     my $ontap_name = _pve_to_ontap($name, _prefix($scfg));
 
@@ -741,6 +776,11 @@ sub path {
         $dev = "/dev/ontap-nvme-pending/$ontap_name";
     }
 
+    # safety: untaint device path (pvedaemon runs with -T)
+    if ($dev =~ m{^(/dev/[A-Za-z0-9_./-]+)$}) {
+        $dev = $1;
+    }
+
     return wantarray ? ($dev, $vmid, $vtype) : $dev;
 }
 
@@ -755,6 +795,8 @@ sub alloc_image {
 
     die "unsupported format '$fmt' - only raw is supported\n"
         if $fmt && $fmt ne 'raw';
+
+    _debug($scfg, 1, "alloc_image($storeid, vmid=$vmid, size=$size)");
 
     my $api = _api($scfg, $storeid);
     my $prefix = _prefix($scfg);
@@ -827,6 +869,7 @@ sub free_image {
     my ($class, $storeid, $scfg, $volname, $isBase) = @_;
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
+    _debug($scfg, 1, "free_image($storeid, $volname)");
     my $api = _api($scfg, $storeid);
     my $ontap_name = _pve_to_ontap($name, _prefix($scfg));
 
@@ -925,6 +968,8 @@ sub activate_storage {
 
     die "nvme-cli not installed\n" if !-x '/usr/sbin/nvme';
 
+    _debug($scfg, 1, "activate_storage($storeid)");
+
     my $api = _api($scfg, $storeid);
     _ensure_subsystem_and_host($api, $scfg->{subsystem});
     _nvme_ensure_connected($scfg, $api);
@@ -978,6 +1023,7 @@ sub volume_resize {
     my ($class, $scfg, $storeid, $volname, $size, $running) = @_;
 
     my ($vtype, $name) = $class->parse_volname($volname);
+    _debug($scfg, 1, "volume_resize($volname, size=$size)");
     my $api = _api($scfg, $storeid);
     my $ontap_name = _pve_to_ontap($name, _prefix($scfg));
 
@@ -1006,6 +1052,7 @@ sub volume_snapshot {
     my ($class, $scfg, $storeid, $volname, $snap, $running) = @_;
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
+    _debug($scfg, 1, "volume_snapshot($volname, snap=$snap)");
     my $api = _api($scfg, $storeid);
     my $prefix = _prefix($scfg);
 
@@ -1191,13 +1238,80 @@ sub check_connection {
     return 1;
 }
 
+# =====================================================================
+# Clone (full copy via dd — no FlexClone)
+# =====================================================================
+
+sub clone_image {
+    my ($class, $scfg, $storeid, $volname, $vmid, $snap) = @_;
+
+    die "linked clone not supported — only full clone\n" if $snap;
+
+    _debug($scfg, 1, "clone_image($volname → vmid=$vmid)");
+
+    my ($vtype, $name, $src_vmid) = $class->parse_volname($volname);
+    my $api = _api($scfg, $storeid);
+    my $ontap_name = _pve_to_ontap($name, _prefix($scfg));
+
+    # --- source size ---
+    my $ns = _find_ns_for_volume($api, $ontap_name);
+    die "source namespace not found for '$ontap_name'\n" if !$ns;
+    my $size_bytes = $ns->{space}{size}
+        // die "cannot determine source size\n";
+    my $size_kib = int($size_bytes / 1024);
+
+    # --- source device ---
+    my $src_path = $class->path($scfg, $volname, $storeid);
+    die "source device not available: $src_path\n"
+        if !-b $src_path;
+
+    # --- allocate destination ---
+    my $dst_volname = eval {
+        $class->alloc_image($storeid, $scfg, $vmid, 'raw',
+            undef, $size_kib);
+    };
+    if (my $err = $@) {
+        die "clone: failed to allocate destination: $err";
+    }
+
+    # --- destination device ---
+    eval {
+        my $dst_path = $class->path($scfg, $dst_volname, $storeid);
+
+        # wait for NVMe device to appear (rescan done by alloc_image)
+        my $retries = 10;
+        while (!-b $dst_path && $retries-- > 0) {
+            sleep 1;
+            $dst_path = $class->path($scfg, $dst_volname, $storeid);
+        }
+        die "destination device not available: $dst_path\n"
+            if !-b $dst_path;
+
+        _debug($scfg, 1, "clone: dd $src_path → $dst_path"
+            . " ($size_bytes bytes)");
+
+        run_command(
+            ['dd', "if=$src_path", "of=$dst_path",
+             'bs=4M', "count=" . int($size_bytes / (4*1024*1024) + 1),
+             'conv=fdatasync', 'status=progress'],
+        );
+    };
+    if (my $err = $@) {
+        # cleanup destination on failure
+        eval { $class->free_image($storeid, $scfg, $dst_volname); };
+        die "clone: copy failed: $err";
+    }
+
+    return $dst_volname;
+}
+
 sub volume_has_feature {
     my ($class, $scfg, $feature, $storeid, $volname, $snapname,
         $running) = @_;
 
     my $features = {
-        snapshot   => { current => 1, snap => 1 },
         copy       => { current => 1 },
+        snapshot   => { current => 1, snap => 1 },
         sparseinit => { current => 1 },
     };
 
@@ -1214,12 +1328,16 @@ sub volume_has_feature {
 sub qemu_blockdev_options {
     my ($class, $scfg, $storeid, $volname, $snapname, $fmt) = @_;
 
-    # scalar() prevents list-context pollution from path()
+    # ONTAP NVMe namespaces are always thin-provisioned — UNMAP
+    # reclaims space on the array.  detect-zeroes=unmap converts
+    # guest zero-writes into UNMAPs for additional reclaim.
     return {
-        driver   => 'host_device',
-        filename => scalar $class->path(
+        driver          => 'host_device',
+        filename        => scalar $class->path(
             $scfg, $volname, $storeid, $snapname,
         ),
+        discard         => 'unmap',
+        'detect-zeroes' => 'unmap',
     };
 }
 
