@@ -13,4 +13,4 @@ Description: Proxmox VE storage plugin for NetApp ONTAP NVMe/TCP
  Architecture: 1 VM disk = 1 NVMe namespace = 1 FlexVol volume.
  Multi-disk VMs use ONTAP consistency groups for atomic snapshots.
  .
- Requires ONTAP 9.18+ and PVE 9.x (APIVER 13).
+ Requires ONTAP 9.10.1+ and PVE 8.x/9.x (APIVER >= 11).

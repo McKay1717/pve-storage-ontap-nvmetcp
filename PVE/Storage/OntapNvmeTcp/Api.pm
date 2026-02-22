@@ -26,7 +26,7 @@ use URI::Escape;
 
 # ONTAP REST API client for NVMe/TCP storage plugin.
 # Manages volumes, namespaces, subsystems, consistency groups,
-# and snapshots via the ONTAP 9.18+ REST API over HTTPS.
+# and snapshots via the ONTAP REST API (9.10.1+) over HTTPS.
 
 my $DEFAULT_TIMEOUT = 30;
 my $JOB_POLL_MAX = 120;
@@ -146,6 +146,31 @@ sub _first_record {
     return @$records ? $records->[0] : undef;
 }
 
+# helper: collect all records across paginated responses
+sub _get_all_records {
+    my ($self, $path) = @_;
+
+    my @all;
+    my $url = $path;
+
+    while ($url) {
+        my $resp = $self->_get($url);
+        push @all, @{$resp->{records} // []};
+
+        my $next = $resp->{_links}{next}{href} // '';
+        if ($next) {
+            # ONTAP returns absolute path starting with /api
+            $next =~ s|^/api||;
+            $url = $next;
+        }
+        else {
+            $url = undef;
+        }
+    }
+
+    return \@all;
+}
+
 # -- SVM ---------------------------------------------------------------
 
 sub get_svm_uuid {
@@ -169,8 +194,9 @@ sub get_volume_uuid {
     my ($self, $vol_name) = @_;
 
     my $svm = uri_escape($self->{vserver});
+    my $name = uri_escape($vol_name);
     my $vol = $self->_first_record(
-        "/storage/volumes?name=$vol_name"
+        "/storage/volumes?name=$name"
             . "&svm.name=$svm&fields=uuid",
     );
 
@@ -260,12 +286,10 @@ sub list_volumes_by_pattern {
     my ($self, $pattern) = @_;
 
     my $svm = uri_escape($self->{vserver});
-    my $resp = $self->_get(
-        "/storage/volumes?svm.name=$svm"
-            . "&name=$pattern&fields=uuid,name,space",
-    );
+    my $path = "/storage/volumes?svm.name=$svm"
+        . "&name=$pattern&fields=uuid,name,space";
 
-    return $resp->{records} // [];
+    return $self->_get_all_records($path);
 }
 
 # -- NVMe namespace operations -----------------------------------------
@@ -313,11 +337,9 @@ sub list_namespaces {
     my $svm = uri_escape($self->{vserver});
     my $query = "/storage/namespaces?svm.name=$svm"
         . "&fields=uuid,name,space,status,location";
-    $query .= "&name=$pattern" if $pattern;
+    $query .= "&name=" . uri_escape($pattern) if $pattern;
 
-    my $resp = $self->_get($query);
-
-    return $resp->{records} // [];
+    return $self->_get_all_records($query);
 }
 
 sub resize_namespace {
@@ -335,10 +357,11 @@ sub get_subsystem {
     my ($self, $name) = @_;
 
     my $svm = uri_escape($self->{vserver});
+    my $esc_name = uri_escape($name);
 
     return $self->_first_record(
         "/protocols/nvme/subsystems"
-            . "?name=$name&svm.name=$svm&fields=uuid,name",
+            . "?name=$esc_name&svm.name=$svm&fields=uuid,name",
     );
 }
 
@@ -402,13 +425,11 @@ sub get_namespace_subsystem_map {
     my ($self, $ns_uuid) = @_;
 
     my $svm = uri_escape($self->{vserver});
-    my $resp = $self->_get(
-        "/protocols/nvme/subsystem-maps"
-            . "?namespace.uuid=$ns_uuid"
-            . "&svm.name=$svm&fields=subsystem,namespace",
-    );
+    my $path = "/protocols/nvme/subsystem-maps"
+        . "?namespace.uuid=$ns_uuid"
+        . "&svm.name=$svm&fields=subsystem,namespace";
 
-    return $resp->{records} // [];
+    return $self->_get_all_records($path);
 }
 
 # -- consistency group operations --------------------------------------
@@ -417,10 +438,11 @@ sub get_consistency_group {
     my ($self, $cg_name) = @_;
 
     my $svm = uri_escape($self->{vserver});
+    my $name = uri_escape($cg_name);
 
     return $self->_first_record(
         "/application/consistency-groups"
-            . "?svm.name=$svm&name=$cg_name"
+            . "?svm.name=$svm&name=$name"
             . "&fields=uuid,name,volumes",
     );
 }
@@ -487,9 +509,7 @@ sub list_cg_snapshots {
         . "/snapshots?fields=name,create_time,comment";
     $q .= "&name=$filter" if $filter;
 
-    my $resp = $self->_get($q);
-
-    return $resp->{records} // [];
+    return $self->_get_all_records($q);
 }
 
 sub get_cg_snapshot_by_name {
@@ -546,9 +566,7 @@ sub list_snapshots {
         . "?fields=name,create_time,comment";
     $q .= "&name=$filter" if $filter;
 
-    my $resp = $self->_get($q);
-
-    return $resp->{records} // [];
+    return $self->_get_all_records($q);
 }
 
 sub get_snapshot_by_name {
