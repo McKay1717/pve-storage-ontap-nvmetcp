@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0-4] - 2026-03-13
+
+### Fixed
+
+- **CRITICAL** — Live migration failed with `storage type 'ontapnvme' not
+  supported`. The plugin did not declare `shared` in `options()`, so PVE
+  ignored `shared 1` in `storage.cfg` and treated the storage as node-local.
+  PVE then attempted to copy disks to the target node — which is unnecessary
+  for network-attached NVMe/TCP namespaces accessible from all cluster nodes.
+
+### Added
+
+- `shared` property in `options()` — PVE now recognizes the `shared`
+  directive in `storage.cfg`.
+- `shared => 1` default in `plugindata()` — ONTAP NVMe/TCP storage is
+  inherently shared (all nodes connect to the same namespaces via NVMe-oF/TCP
+  fabric). New storage entries are automatically configured as shared. Admin
+  can still restrict per-node access via the `nodes` property.
+
 ## [1.0-3] - 2026-02-22
 
 ### Fixed

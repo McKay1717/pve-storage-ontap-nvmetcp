@@ -1,3 +1,18 @@
+pve-storage-ontap-nvmetcp (1.0-4) stable; urgency=medium
+
+  * fix: declare 'shared' option to enable live migration.
+    PVE migration framework refused to migrate VMs with disks on ONTAP
+    NVMe/TCP storage ("storage type 'ontapnvme' not supported") because
+    the plugin did not declare 'shared' in options(). PVE ignored the
+    'shared 1' directive in storage.cfg and treated the storage as
+    node-local.
+  * feat: force shared=1 by default in plugindata(). ONTAP NVMe/TCP
+    storage is inherently shared — all cluster nodes connect to the
+    same namespaces via NVMe-oF/TCP fabric. Admin can still restrict
+    access per-node with 'nodes' property.
+
+ -- Nicolas I. (McKay1717) <https://github.com/McKay1717>  Thu, 13 Mar 2026 17:00:00 +0100
+
 pve-storage-ontap-nvmetcp (1.0-3) stable; urgency=high
 
   * fix: ONTAP REST API pagination — follow _links.next across all

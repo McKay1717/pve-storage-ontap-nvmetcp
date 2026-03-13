@@ -553,6 +553,7 @@ sub plugindata {
     return {
         content                => [{ images => 1 }, { images => 1 }],
         'sensitive-properties' => { password => 1 },
+        shared                 => 1,
     };
 }
 
@@ -664,6 +665,7 @@ sub options {
         tiering_policy      => { optional => 1 },
         verify_ssl          => { optional => 1 },
         debug               => { optional => 1 },
+        shared              => { optional => 1 },
         nodes               => { optional => 1 },
         disable             => { optional => 1 },
         content             => { optional => 1 },
