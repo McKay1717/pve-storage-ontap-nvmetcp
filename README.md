@@ -27,6 +27,8 @@ to enable atomic multi-disk snapshot operations.
 ### Features
 
 - **Direct NVMe/TCP block access** — no iSCSI, no file layer, minimal latency
+- **Shared storage with live migration** — all cluster nodes access the same
+  namespaces via NVMe-oF/TCP fabric; `qm migrate` works out of the box
 - **Atomic multi-disk snapshots** via ONTAP consistency groups
 - **Auto-discovery** of NVMe/TCP data LIFs (or manual portal override)
 - **Three-strategy device resolution** — `nvme netapp ontapdevices`, sysfs UUID
@@ -74,7 +76,7 @@ to enable atomic multi-disk snapshot operations.
 
 ```bash
 apt install nvme-cli
-dpkg -i pve-storage-ontap-nvmetcp_1.0-1_all.deb
+dpkg -i pve-storage-ontap-nvmetcp_1.0-4_all.deb
 ```
 
 ### From source
@@ -83,7 +85,7 @@ dpkg -i pve-storage-ontap-nvmetcp_1.0-1_all.deb
 git clone https://github.com/McKay1717/pve-storage-ontap-nvmetcp.git
 cd pve-storage-ontap-nvmetcp
 make deb
-dpkg -i pve-storage-ontap-nvmetcp_1.0-1_all.deb
+dpkg -i pve-storage-ontap-nvmetcp_1.0-4_all.deb
 ```
 
 ## Configuration
@@ -123,6 +125,12 @@ pvesm add ontapnvme myontap \
 | `tiering_policy`     | FabricPool tiering policy                             | —        |
 | `verify_ssl`         | Verify ONTAP TLS certificate                          | `0`      |
 | `debug`              | Debug logging level (0=off, 1=basic, 2=verbose)       | `0`      |
+| `shared`             | Mark storage as shared across cluster nodes           | `1` ¹    |
+| `nodes`              | Restrict storage to specific nodes                    | all      |
+
+> ¹ ONTAP NVMe/TCP is inherently shared storage — all cluster nodes connect to
+> the same namespaces via the NVMe-oF/TCP fabric. The plugin defaults to
+> `shared=1`. Set `shared 0` only if testing single-node setups.
 
 ### ONTAP prerequisites
 
@@ -165,6 +173,36 @@ to a local `/dev/nvmeXnY` using three strategies in order:
    migration)
 2. **sysfs UUID/NGUID scan** — direct kernel attribute lookup
 3. **`nvme list` JSON + sysfs** — fallback for non-NetApp nvme-cli builds
+
+### Live migration
+
+Since the storage is shared (all nodes see the same NVMe/TCP namespaces), PVE
+can live-migrate VMs without copying disk data:
+
+```bash
+qm migrate 100 target-node --online
+```
+
+**Requirements for live migration:**
+
+1. The plugin must be installed on **all** cluster nodes
+2. All nodes must have NVMe/TCP connectivity to the ONTAP data LIFs
+3. The VM must not have snapshots with `vmstate` on local storage — delete them
+   first or move vmstate to shared storage
+
+During migration, the target node connects to the ONTAP namespaces via
+`nvme connect-all` (triggered automatically by `path()` if the device is not
+yet visible). No data is copied — only VM memory state is transferred between
+nodes.
+
+> [!NOTE]
+> If migrating from a pre-1.0-4 installation, verify that `shared 1` is
+> present in your storage configuration:
+> ```bash
+> grep -A5 'ontapnvme:' /etc/pve/storage.cfg
+> # should show: shared 1
+> ```
+> New installations with 1.0-4+ get `shared 1` automatically.
 
 ## Troubleshooting
 
