@@ -1343,16 +1343,14 @@ sub volume_has_feature {
 sub qemu_blockdev_options {
     my ($class, $scfg, $storeid, $volname, $snapname, $fmt) = @_;
 
-    # ONTAP NVMe namespaces are always thin-provisioned — UNMAP
-    # reclaims space on the array.  detect-zeroes=unmap converts
-    # guest zero-writes into UNMAPs for additional reclaim.
+    # Return backend access only — PVE/qemu-server adds discard,
+    # detect-zeroes, cache, aio from the VM disk configuration.
+    # For ONTAP thin reclaim, set discard=on,ssd=1 on each VM disk.
     return {
-        driver          => 'host_device',
-        filename        => scalar $class->path(
+        driver   => 'host_device',
+        filename => scalar $class->path(
             $scfg, $volname, $storeid, $snapname,
         ),
-        discard         => 'unmap',
-        'detect-zeroes' => 'unmap',
     };
 }
 

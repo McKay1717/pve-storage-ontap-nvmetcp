@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0-6] - 2026-03-20
+
+### Fixed
+
+- **`qemu_blockdev_options`** — removed `discard=unmap` and
+  `detect-zeroes=unmap` from blockdev return value. PVE validates plugin
+  blockdev options against an allowed schema and silently dropped these,
+  generating 4 warnings per VM start:
+
+      WARN: volume '...' - dropping block device option 'discard'
+      set by storage plugin - not currently part of allowed schema
+
+  Per the PVE `qemu_blockdev_options` contract, plugins must return only
+  backend access options (`driver` + `filename`). Discard and detect-zeroes
+  are managed by qemu-server from the VM disk configuration (`discard=on`).
+  The automatic TRIM feature introduced in 1.0-3 was never effective — the
+  options were dropped before reaching QEMU.
+
+### Changed
+
+- TRIM/discard is now configured via VM disk options (standard PVE behavior):
+  `qm set <vmid> --scsi0 myontap:vm-N-disk-0,discard=on,ssd=1`
+
 ## [1.0-5] - 2026-03-20
 
 ### Added

@@ -78,7 +78,7 @@ to enable atomic multi-disk snapshot operations.
 
 ```bash
 apt install nvme-cli
-dpkg -i pve-storage-ontap-nvmetcp_1.0-5_all.deb
+dpkg -i pve-storage-ontap-nvmetcp_1.0-6_all.deb
 ```
 
 ### From source
@@ -87,7 +87,7 @@ dpkg -i pve-storage-ontap-nvmetcp_1.0-5_all.deb
 git clone https://github.com/McKay1717/pve-storage-ontap-nvmetcp.git
 cd pve-storage-ontap-nvmetcp
 make deb
-dpkg -i pve-storage-ontap-nvmetcp_1.0-5_all.deb
+dpkg -i pve-storage-ontap-nvmetcp_1.0-6_all.deb
 ```
 
 ## Configuration
@@ -232,26 +232,20 @@ journalctl -u pvedaemon -f | grep 'ontapnvme ::'
 ### TRIM / discard and SSD emulation
 
 ONTAP namespaces are thin-provisioned on SSD-backed aggregates (AFF/ASA).
-For optimal space reclaim and guest I/O behavior, two layers cooperate:
-
-| Layer | Option | Set by | Effect |
-|-------|--------|--------|--------|
-| **QEMU blockdev** | `discard=unmap`, `detect-zeroes=unmap` | Plugin (automatic) | UNMAP/zero-writes forwarded to ONTAP |
-| **QEMU device** | `discard=on`, `ssd=1` | VM config (manual) | Guest sees TRIM support + SSD |
-
-The plugin forces the blockdev layer automatically. For the device layer,
-add `discard=on` and `ssd=1` when creating or editing VM disks:
+For optimal space reclaim, enable `discard=on` and `ssd=1` on each VM disk:
 
 ```bash
 # CLI
 qm set 100 --scsi0 myontap:vm-100-disk-0,ssd=1,discard=on
-
-# or for an existing disk — just add the options
-qm set 100 --scsi0 myontap:vm-100-disk-0,size=10G,ssd=1,discard=on
 ```
 
 In the PVE web GUI: edit the disk → **Advanced** → check **Discard** and
 **SSD emulation**.
+
+> [!IMPORTANT]
+> Without `discard=on`, deleted data inside the guest will not be reclaimed
+> on ONTAP. This is the standard PVE behavior — the same setting is required
+> for RBD, LVM-thin, and ZFS-thin storage.
 
 > [!NOTE]
 > `ssd=1` only applies to SCSI, IDE, and SATA controllers. VirtIO-blk
@@ -261,9 +255,12 @@ In the PVE web GUI: edit the disk → **Advanced** → check **Discard** and
 The complete TRIM flow:
 
 ```
-Guest TRIM → device (discard=on) → blockdev (discard=unmap) → /dev/nvmeXnY → ONTAP Deallocate
-Guest zeros → blockdev (detect-zeroes=unmap) → ONTAP Deallocate
+Guest TRIM → QEMU device (discard=on) → QEMU blockdev (discard=unmap) → /dev/nvmeXnY → ONTAP Deallocate
+Guest zeros → QEMU blockdev (detect-zeroes=unmap) → ONTAP Deallocate
 ```
+
+PVE propagates `discard=on` from the VM configuration to both the QEMU device
+and blockdev layers automatically — including `detect-zeroes=unmap`.
 
 ### TLS certificate verification
 
