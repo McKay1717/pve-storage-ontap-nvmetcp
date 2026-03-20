@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0-5] - 2026-03-20
+
+### Added
+
+- **Cloud-init disk support** (`vm-<vmid>-cloudinit`). Cloud-init disks use a
+  naming convention that differs from regular disks (`vm-N-cloudinit` vs
+  `vm-N-disk-N`). Five functions now handle the cloudinit pattern:
+  `parse_volname`, `_parse_ontap_disk_name`, `_ontap_to_pve`, `alloc_image`,
+  and `list_images`. Cloud-init volumes are added to the VM's consistency group
+  for atomic snapshots. ONTAP minimum namespace size (20 MiB) applies; real
+  space consumption is near-zero on thin-provisioned aggregates.
+  Fixes [#1](https://github.com/McKay1717/pve-storage-ontap-nvmetcp/issues/1).
+  Reported by [@PandemiK911](https://github.com/PandemiK911).
+
 ## [1.0-4] - 2026-03-13
 
 ### Fixed

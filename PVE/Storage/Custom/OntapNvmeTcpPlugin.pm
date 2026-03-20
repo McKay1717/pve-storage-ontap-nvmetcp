@@ -132,6 +132,7 @@ sub _ontap_to_pve {
     my $pve_name = $ontap_name;
     $pve_name =~ s/^\Q$prefix\E// if $prefix;
     $pve_name =~ s/^vm_([0-9]+)_disk_([0-9]+)$/vm-$1-disk-$2/;
+    $pve_name =~ s/^vm_([0-9]+)_cloudinit$/vm-$1-cloudinit/;
     $pve_name =~ s/^vm_([0-9]+)_state_(.+)$/vm-$1-state-$2/;
 
     return $pve_name;
@@ -151,6 +152,7 @@ sub _parse_ontap_disk_name {
     $prefix //= '';
     $name =~ s/^\Q$prefix\E// if $prefix;
 
+    return ($1, 'cloudinit') if $name =~ m/^vm_([0-9]+)_cloudinit$/;
     return ($1, $2) if $name =~ m/^vm_([0-9]+)_disk_([0-9]+)$/;
     return ();
 }
@@ -741,6 +743,9 @@ sub parse_volname {
     if ($volname =~ m/^(vm-([0-9]+)-disk-([0-9]+))$/) {
         return ('images', $1, $2, undef, undef, undef, 'raw');
     }
+    if ($volname =~ m/^(vm-([0-9]+)-cloudinit)$/) {
+        return ('images', $1, $2, undef, undef, undef, 'raw');
+    }
     if ($volname =~ m/^(vm-([0-9]+)-state-\S+)$/) {
         return ('images', $1, $2, undef, undef, undef, 'raw');
     }
@@ -812,7 +817,12 @@ sub alloc_image {
         my $ontap = _pve_to_ontap($name, $prefix);
         my ($vid, $idx) = _parse_ontap_disk_name($ontap, $prefix);
         die "invalid namespace name '$name'\n" if !defined($vid);
-        $vol_name = _ontap_name($vid, $idx, $prefix);
+        if ($idx eq 'cloudinit') {
+            $vol_name = $ontap; # already: ${prefix}vm_103_cloudinit
+        }
+        else {
+            $vol_name = _ontap_name($vid, $idx, $prefix);
+        }
         $pve_name = _ontap_to_pve($vol_name, $prefix);
     }
     else {
@@ -914,11 +924,14 @@ sub list_images {
         my $state_ns = $api->list_namespaces(
             "/vol/${prefix}vm_*_state_*/${prefix}vm_*_state_*",
         ) // [];
-        $cache->{$ckey} = [@$disk_ns, @$state_ns];
+        my $ci_ns = $api->list_namespaces(
+            "/vol/${prefix}vm_*_cloudinit/${prefix}vm_*_cloudinit",
+        ) // [];
+        $cache->{$ckey} = [@$disk_ns, @$state_ns, @$ci_ns];
     }
 
     my $re_vol = qr{
-        /vol/(\Q$prefix\Evm_[0-9]+_(?:disk_[0-9]+|state_\S+))/
+        /vol/(\Q$prefix\Evm_[0-9]+_(?:disk_[0-9]+|state_\S+|cloudinit))/
     }x;
 
     my $res = [];
