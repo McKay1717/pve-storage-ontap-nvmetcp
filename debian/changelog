@@ -1,3 +1,14 @@
+pve-storage-ontap-nvmetcp (1.0-5) stable; urgency=medium
+
+  * feat: add cloud-init disk support (vm-<vmid>-cloudinit). Fixes #1.
+    Cloud-init disks use a different naming convention than regular
+    disks. Five functions now handle the cloudinit pattern:
+    parse_volname, _parse_ontap_disk_name, _ontap_to_pve,
+    alloc_image, and list_images.
+    Reported-by: PandemiK911
+
+ -- Nicolas I. (McKay1717) <https://github.com/McKay1717>  Thu, 20 Mar 2026 10:00:00 +0100
+
 pve-storage-ontap-nvmetcp (1.0-4) stable; urgency=medium
 
   * fix: declare 'shared' option to enable live migration.

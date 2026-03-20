@@ -29,6 +29,8 @@ to enable atomic multi-disk snapshot operations.
 - **Direct NVMe/TCP block access** — no iSCSI, no file layer, minimal latency
 - **Shared storage with live migration** — all cluster nodes access the same
   namespaces via NVMe-oF/TCP fabric; `qm migrate` works out of the box
+- **Cloud-init support** — `vm-<vmid>-cloudinit` disks for automated VM
+  provisioning
 - **Atomic multi-disk snapshots** via ONTAP consistency groups
 - **Auto-discovery** of NVMe/TCP data LIFs (or manual portal override)
 - **Three-strategy device resolution** — `nvme netapp ontapdevices`, sysfs UUID
@@ -76,7 +78,7 @@ to enable atomic multi-disk snapshot operations.
 
 ```bash
 apt install nvme-cli
-dpkg -i pve-storage-ontap-nvmetcp_1.0-4_all.deb
+dpkg -i pve-storage-ontap-nvmetcp_1.0-5_all.deb
 ```
 
 ### From source
@@ -85,7 +87,7 @@ dpkg -i pve-storage-ontap-nvmetcp_1.0-4_all.deb
 git clone https://github.com/McKay1717/pve-storage-ontap-nvmetcp.git
 cd pve-storage-ontap-nvmetcp
 make deb
-dpkg -i pve-storage-ontap-nvmetcp_1.0-4_all.deb
+dpkg -i pve-storage-ontap-nvmetcp_1.0-5_all.deb
 ```
 
 ## Configuration
