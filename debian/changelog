@@ -1,3 +1,15 @@
+pve-storage-ontap-nvmetcp (1.0-6) stable; urgency=medium
+
+  * fix: remove discard=unmap and detect-zeroes=unmap from
+    qemu_blockdev_options. PVE rejects these options against its
+    allowed schema, generating 4 warnings per VM start. The plugin
+    must only return backend access (driver + filename); discard is
+    managed by qemu-server from VM disk configuration (discard=on).
+    The automatic TRIM feature from 1.0-3 was silently dropped by
+    PVE and never effective.
+
+ -- Nicolas I. (McKay1717) <https://github.com/McKay1717>  Thu, 20 Mar 2026 12:00:00 +0100
+
 pve-storage-ontap-nvmetcp (1.0-5) stable; urgency=medium
 
   * feat: add cloud-init disk support (vm-<vmid>-cloudinit). Fixes #1.
