@@ -27,3 +27,11 @@ debian_build/
 # OS
 .DS_Store
 Thumbs.db
+
+# Vendored upstream reference clones — local reference only, NEVER commit
+/pve-common/
+/pve-storage/
+/pve-storage-plugin-examples/
+
+# ONTAP REST API spec — large untracked local reference only
+/swagger.yaml

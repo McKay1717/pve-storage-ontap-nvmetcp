@@ -1,3 +1,35 @@
+pve-storage-ontap-nvmetcp (1.1-1) stable; urgency=medium
+
+  * First release since 1.0-6; targets the Proxmox VE 9 storage API
+    (APIVER 12-15) and drops Proxmox VE 8 support. Flexible api() and method
+    signatures updated to the current contract.
+  * feat: templates (qm template / create_base) and linked clones via ONTAP
+    FlexClone using PVE's compound volname base-X/vm-Y; full clones use PVE's
+    standard copy.
+  * feat: rename_volume (qm move-disk --target-vmid and rename, with
+    consistency-group move); FlexVol autosize; get_identity (SVM UUID).
+  * feat: optional SVM-scoped operation (svm_scoped, default off) for a
+    least-privilege ONTAP account with no cluster privileges; async ops use
+    return_timeout=120 and status() reports SVM volume space (svm_capacity).
+  * feat: NVMe in-band authentication (DH-HMAC-CHAP) via nvme_dhchap_secret /
+    nvme_dhchap_ctrl_secret (ONTAP 9.14+).
+  * feat: NVMe/TCP-TLS (TLS 1.3) via nvme_tls / nvme_tls_psk (ONTAP 9.16+; a
+    TLS-capable kernel + tlshd + nvme-cli on the node).
+  * feat: IPv6 and FQDN support for mgmt_ip and data portals (IPv6 bracketed
+    in the REST URL; FQDN resolved preferring IPv6).
+  * fix: free_image detaches from the consistency group before delete and
+    propagates failures; alloc_image rolls back on mapping failure;
+    volume_snapshot_info returns virtual-size and epoch timestamps; volume
+    delete uses force=true and re-onlines on failure.
+  * security: API client refuses HTTP redirects (no Basic-auth leak on a 3xx,
+    CVE-2026-8368 class); hardened taint untainting and a REST path guard;
+    password and NVMe secrets stored 0600 as sensitive properties and redacted
+    from logs; all REST query parameters URI-escaped; verify_ssl defaults to 1;
+    encryption opt-in; least-privilege ONTAP roles documented.
+  * perf: per-storage API client cache; check_connection is a TCP probe.
+
+ -- Nicolas I. (McKay1717) <https://github.com/McKay1717>  Sat, 31 May 2026 12:00:00 +0200
+
 pve-storage-ontap-nvmetcp (1.0-6) stable; urgency=medium
 
   * fix: remove discard=unmap and detect-zeroes=unmap from
