@@ -5,6 +5,86 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1-1] - 2026-05-31
+
+First release since 1.0-6. Targets the **Proxmox VE 9** storage API and adds
+templates and FlexClone linked clones, disk reassignment, snapshot-safety,
+optional SVM-scoped operation, NVMe in-band authentication and TLS, IPv6/FQDN
+support, and a full security-hardening pass.
+**Requires Proxmox VE 9** — support for Proxmox VE 8 is dropped.
+
+### Added
+
+- **Proxmox VE 9 storage API (APIVER 12–15).** `api()` reports the host's
+  `PVE::Storage::APIVER` clamped to the supported range; all method signatures
+  match the current contract (`qemu_blockdev_options`,
+  `volume_qemu_snapshot_method`, `free_image`, `get_formats`, `volume_resize`,
+  `volume_has_feature`).
+- **Templates and linked clones via ONTAP FlexClone.** `qm template` creates a
+  base image with a `pve_base` snapshot; a linked clone is served by
+  `clone_image` as an instant, space-shared FlexClone from that snapshot, using
+  PVE's compound volname `base-X/vm-Y` (reconstructed in `list_images` from the
+  FlexClone parent) so PVE tracks the backing base (e.g. refuses to delete a
+  template still in use). Full clones use PVE's standard copy.
+- **Disk reassignment / rename** (`rename_volume`) — `qm move-disk
+  --target-vmid` and disk rename, moving consistency-group membership to the
+  target VM.
+- **FlexVol autosize** (`autosize`, `autosize_max_percent`) so the fixed-size
+  thin namespace never goes offline when snapshots fill its container.
+- **`get_identity`** — returns the ONTAP SVM UUID as a stable backend id.
+- **Optional SVM-scoped operation** (`svm_scoped`, default off) for a
+  least-privilege ONTAP account with no cluster privileges: the plugin avoids
+  the cluster-scoped REST endpoints (async ops complete inline; `status()`
+  reports SVM volume space, with `svm_capacity` for the gauge total).
+- **NVMe in-band authentication (DH-HMAC-CHAP)** — `nvme_dhchap_secret` and
+  optional `nvme_dhchap_ctrl_secret` (bidirectional). The host NQN is
+  registered with the secret on the ONTAP subsystem and `nvme connect`
+  authenticates. Requires ONTAP 9.14+.
+- **NVMe/TCP-TLS (TLS 1.3)** — `nvme_tls` + `nvme_tls_psk` encrypt the data
+  connection (ONTAP 9.16+; the PVE node needs a TLS-capable kernel, `tlshd`,
+  and an `nvme-cli` with TLS support).
+- **IPv6 and FQDN** for `mgmt_ip` and the data portals — an IPv6 management
+  address is bracketed in the REST URL, and a FQDN portal is resolved
+  preferring IPv6.
+
+### Changed
+
+- **`verify_ssl` defaults to `1`** (TLS verification on). For a private-CA
+  ONTAP certificate, trust the CA on the node rather than disabling.
+- **`encryption` is opt-in** — unset inherits the ONTAP/aggregate default
+  instead of forcing NVE.
+- All asynchronous ONTAP operations request `return_timeout=120` so they
+  usually complete inline instead of returning a job to poll.
+- **Volume deletion uses `force=true`** to bypass the ONTAP recovery queue, so
+  a deleted FlexClone no longer pins its base image.
+
+### Fixed
+
+- `free_image` removes the volume from its consistency group before deleting
+  it (no orphaned CGs) and propagates a delete failure instead of leaving an
+  orphan; a failed delete re-onlines the volume rather than stranding it.
+- `alloc_image` rolls back the namespace and volume if mapping fails.
+- `volume_snapshot_info` returns `virtual-size` and epoch timestamps.
+
+### Security
+
+- The ONTAP API client **refuses HTTP redirects** (`max_redirect 0`), so the
+  HTTP Basic credential cannot leak to another host on a 3xx redirect
+  (CVE-2026-8368 class), independent of the node's `libwww-perl` version.
+- Hardened taint untainting (`\z`-anchored, strict device/IP grammars) and a
+  central REST path guard rejecting `..` / control characters.
+- The password and the NVMe secrets are sensitive properties (never in
+  `storage.cfg`), written `0600` atomically under `/etc/pve/priv/`, and
+  **redacted from all log/error output**.
+- All REST query-string parameters are URI-escaped; both a cluster-scoped and
+  an SVM-scoped least-privilege ONTAP role are documented in the README.
+
+### Performance
+
+- The ONTAP API client and its resolved SVM UUID are cached per storage
+  (invalidated on update/delete).
+- `check_connection` is a lightweight TCP reachability probe.
+
 ## [1.0-6] - 2026-03-20
 
 ### Fixed
