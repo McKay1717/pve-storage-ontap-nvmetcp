@@ -1913,10 +1913,9 @@ sub volume_qemu_snapshot_method {
 
 sub get_formats {
     my ($class, $scfg, $storeid) = @_;
-
     return {
-        formats        => { raw => 1 },
-        default_format => 'raw',
+        valid   => { raw => 1 },
+        default => 'raw',
     };
 }
 
