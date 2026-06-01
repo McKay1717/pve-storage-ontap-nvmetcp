@@ -688,7 +688,7 @@ sub list_cg_snapshots {
     my ($self, $cg_uuid, $filter) = @_;
 
     my $q = "/application/consistency-groups/$cg_uuid"
-        . "/snapshots?fields=name,create_time,comment";
+        . "/snapshots?fields=uuid,name,create_time,comment";
     $q .= "&name=" . uri_escape($filter) if $filter;
 
     return $self->_get_all_records($q);
