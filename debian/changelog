@@ -1,3 +1,17 @@
+pve-storage-ontap-nvmetcp (1.1-2) stable; urgency=medium
+
+  * fix: get_formats() returns the 'valid'/'default' keys expected by
+    PVE::Storage::Plugin (were 'formats'/'default_format', silently ignored).
+    Thanks PandemiK911 (#2).
+  * fix: volume_snapshot_info() reports a stable id for consistency-group
+    snapshots; list_cg_snapshots() now fetches the uuid field. Thanks
+    PandemiK911 (#3).
+  * feat: on_update_hook_full() removes the secret file when a sensitive
+    property is deleted (pvesm set --delete), instead of leaving it orphaned.
+    Thanks PandemiK911 (#4).
+
+ -- Nicolas I. (McKay1717) <https://github.com/McKay1717>  Mon, 01 Jun 2026 12:02:21 +0200
+
 pve-storage-ontap-nvmetcp (1.1-1) stable; urgency=medium
 
   * First release since 1.0-6; targets the Proxmox VE 9 storage API

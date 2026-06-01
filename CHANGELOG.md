@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1-2] - 2026-06-01
+
+Community contributions on top of 1.1-1 (thanks
+[@PandemiK911](https://github.com/PandemiK911)): two bug fixes and a
+secret-lifecycle improvement.
+
+### Added
+
+- **`on_update_hook_full()`** — deleting a sensitive property (e.g.
+  `pvesm set <storage> --delete nvme_dhchap_secret`) now removes the
+  corresponding secret file under `/etc/pve/priv/storage/` instead of leaving
+  it orphaned. The save/delete logic is shared via `_apply_sensitive_updates`;
+  `on_update_hook` is kept as the fallback for older Proxmox VE.
+  ([#4](https://github.com/McKay1717/pve-storage-ontap-nvmetcp/pull/4))
+
+### Fixed
+
+- **`get_formats()`** now returns the `valid` and `default` keys expected by
+  `PVE::Storage::Plugin` (they were `formats` / `default_format`, which the
+  base class silently ignored). No functional change for the raw-only backend.
+  ([#2](https://github.com/McKay1717/pve-storage-ontap-nvmetcp/pull/2))
+- **`volume_snapshot_info()`** now reports a stable `id` for consistency-group
+  snapshots: `list_cg_snapshots()` fetches the `uuid` field, which was
+  previously empty (APIVER 15 contract).
+  ([#3](https://github.com/McKay1717/pve-storage-ontap-nvmetcp/pull/3))
+
 ## [1.1-1] - 2026-05-31
 
 First release since 1.0-6. Targets the **Proxmox VE 9** storage API and adds
