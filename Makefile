@@ -1,6 +1,6 @@
 PACKAGE = pve-storage-ontap-nvmetcp
 VERSION = 1.1
-PKGREL = 1
+PKGREL = 2
 ARCH = all
 
 DESTDIR =
