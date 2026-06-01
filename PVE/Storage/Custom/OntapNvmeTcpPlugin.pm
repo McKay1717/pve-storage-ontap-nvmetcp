@@ -1066,26 +1066,47 @@ sub on_add_hook {
     return;
 }
 
-sub on_update_hook {
-    my ($class, $storeid, $scfg, %param) = @_;
+my sub _apply_sensitive_updates {
+    my ($storeid, $sensitive, $delete) = @_;
 
-    _save_password($storeid, $param{password})
-        if defined($param{password});
+    # Save new/updated sensitive properties
+    _save_password($storeid, $sensitive->{password})
+        if defined($sensitive->{password});
 
-    # update optional NVMe auth / TLS secrets when supplied
     for my $s (
-        ['nvme_dhchap_secret', 'dhchap'],
+        ['nvme_dhchap_secret',      'dhchap' ],
         ['nvme_dhchap_ctrl_secret', 'dhchapc'],
-        ['nvme_tls_psk', 'tlspsk'],
+        ['nvme_tls_psk',            'tlspsk' ],
     ) {
         my ($k, $kind) = @$s;
-        _save_secret($storeid, $kind, $param{$k})
-            if defined($param{$k}) && $param{$k} ne '';
+        _save_secret($storeid, $kind, $sensitive->{$k})
+            if defined($sensitive->{$k}) && $sensitive->{$k} ne '';
     }
 
-    # config or password may have changed; drop the cached client
-    _invalidate_api_cache($storeid);
+    # Clean up secret files for deleted properties
+    my %secret_map = (
+        password                => 'pw',
+        nvme_dhchap_secret      => 'dhchap',
+        nvme_dhchap_ctrl_secret => 'dhchapc',
+        nvme_tls_psk            => 'tlspsk',
+    );
+    for my $prop (@{$delete // []}) {
+        my $kind = $secret_map{$prop} // next;
+        _delete_secret($storeid, $kind);
+    }
+}
 
+sub on_update_hook {
+    my ($class, $storeid, $scfg, %param) = @_;
+    _apply_sensitive_updates($storeid, \%param, []);
+    _invalidate_api_cache($storeid);
+    return;
+}
+
+sub on_update_hook_full {
+    my ($class, $storeid, $scfg, $update, $delete, $sensitive) = @_;
+    _apply_sensitive_updates($storeid, $sensitive, $delete);
+    _invalidate_api_cache($storeid);
     return;
 }
 
