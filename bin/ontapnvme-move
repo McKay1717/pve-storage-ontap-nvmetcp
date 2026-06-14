@@ -1,0 +1,109 @@
+#!/usr/bin/perl
+
+# ontapnvme-move — copy-less disk move between two ontapnvme storages on the
+# same ONTAP SVM (different storage_prefix, typically different aggregates).
+#
+# Instead of PVE's block copy (which loses ONTAP snapshots and FlexClone
+# lineage), the disk's FlexVol is renamed to the target storage's prefix, its
+# consistency-group membership and snapshot/QoS settings are moved, and ONTAP
+# `volume move` relocates the data to the target aggregate in the background
+# (non-disruptively; requires cluster-scoped ONTAP credentials — SVM-scoped
+# storages get the ownership handoff only, with a warning).
+#
+
+use strict;
+use warnings;
+
+use Getopt::Long;
+
+use PVE::QemuConfig;
+use PVE::QemuServer;
+use PVE::Storage;
+
+use PVE::Storage::Custom::OntapNvmeTcpPlugin;
+
+sub usage {
+    die <<"EOF";
+usage: ontapnvme-move <vmid> <disk> <target-storage> [--no-relocate]
+
+  <vmid>            VM owning the disk (config must be on this node)
+  <disk>            config key of the disk, e.g. scsi0, virtio1, efidisk0
+  <target-storage>  ontapnvme storage on the same SVM, different prefix
+  --no-relocate     hand the disk over without moving its data to the
+                    target storage's aggregate
+
+The VM must be stopped: the handoff rewrites its config (including snapshot
+sections). ONTAP snapshots, FlexClone lineage and the namespace identity are
+preserved — nothing is copied.
+EOF
+}
+
+my $no_relocate = 0;
+GetOptions('no-relocate' => \$no_relocate, 'help|h' => sub { usage() })
+    or usage();
+my ($vmid, $disk, $target) = @ARGV;
+usage() if !defined($vmid) || !defined($disk) || !defined($target) || @ARGV > 3;
+die "invalid vmid '$vmid'\n" if $vmid !~ /^[0-9]+$/;
+
+my $storecfg = PVE::Storage::config();
+my $dst_scfg = PVE::Storage::storage_config($storecfg, $target);
+die "target storage '$target' is not an ontapnvme storage\n"
+    if ($dst_scfg->{type} // '') ne 'ontapnvme';
+
+my $conf = PVE::QemuConfig->load_config($vmid);
+die "VM $vmid is running — stop it first (the handoff rewrites its config)\n"
+    if PVE::QemuServer::check_running($vmid);
+
+my $value = $conf->{$disk}
+    or die "disk '$disk' not found in VM $vmid config\n";
+my ($volid) = split(/,/, $value);
+my ($src_storeid, $volname) = PVE::Storage::parse_volume_id($volid);
+die "disk '$disk' ($volid) is already on storage '$target'\n"
+    if $src_storeid eq $target;
+my $src_scfg = PVE::Storage::storage_config($storecfg, $src_storeid);
+die "source storage '$src_storeid' is not an ontapnvme storage\n"
+    if ($src_scfg->{type} // '') ne 'ontapnvme';
+
+print "handing off $volid to storage '$target'"
+    . ($no_relocate ? " (data relocation skipped)" : "") . " ...\n";
+
+my $res = PVE::Storage::Custom::OntapNvmeTcpPlugin->ontap_handoff_volume(
+    $src_storeid, $src_scfg, $target, $dst_scfg, $volname,
+    $no_relocate ? 0 : 1,
+);
+
+my $newvolid = "$target:$res->{volname}";
+
+PVE::QemuConfig->lock_config(
+    $vmid,
+    sub {
+        my $c = PVE::QemuConfig->load_config($vmid);
+        die "VM $vmid started during the handoff — ONTAP side is done;"
+            . " stop the VM and re-run ontapnvme-move to finish the config"
+            . " rewrite\n"
+            if PVE::QemuServer::check_running($vmid);
+
+        # the volid may appear as a drive value head (drive options follow
+        # after a comma), or stand alone (unusedN, vmstate) — in the live
+        # config, in pending changes and in every snapshot section
+        my $rewrite = sub {
+            my ($h) = @_;
+            for my $k (keys %$h) {
+                next if ref($h->{$k});
+                $h->{$k} =~ s/^\Q$volid\E(?=$|,)/$newvolid/;
+            }
+        };
+        $rewrite->($c);
+        $rewrite->($c->{pending}) if $c->{pending};
+        if ($c->{snapshots}) {
+            $rewrite->($c->{snapshots}{$_}) for keys %{$c->{snapshots}};
+        }
+        PVE::QemuConfig->write_config($vmid, $c);
+    },
+);
+
+print "VM config updated: $volid -> $newvolid\n";
+print $res->{relocating}
+    ? "ONTAP volume move to aggregate '$dst_scfg->{aggregate}' is running in"
+        . " the background (non-disruptive)\n"
+    : "data was not relocated and remains on the source aggregate\n";

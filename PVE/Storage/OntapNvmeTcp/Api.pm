@@ -77,10 +77,12 @@ sub new {
     return bless $self, $class;
 }
 
+sub is_svm_scoped { return $_[0]->{svm_scoped}; }
+
 # -- REST helpers ------------------------------------------------------
 
 sub _request {
-    my ($self, $method, $path, $body) = @_;
+    my ($self, $method, $path, $body, $opts) = @_;
 
     # Ask ONTAP to finish async operations inline (120s = the max) instead of
     # returning a job to poll. This avoids the cluster-scoped /cluster/jobs
@@ -110,6 +112,21 @@ sub _request {
     my $code = $resp->code;
     my $content = $resp->decoded_content // '';
 
+    # LWP reports connect/TLS failures as a synthesized 5xx carrying the
+    # Client-Warning header. Name the real problem — API unreachable or
+    # certificate verification failing — instead of a generic ONTAP error, so
+    # an expired certificate does not masquerade as a storage outage.
+    if (($resp->header('Client-Warning') // '') eq 'Internal response') {
+        my $reason = $content || $resp->status_line;
+        $reason =~ s/\s+/ /g;
+        my $hint = $reason =~ /certificate|\bssl\b|handshake/i
+            ? ' (TLS verification failed: check the ONTAP certificate'
+                . ' expiry/CA or the node trust store)'
+            : '';
+        die "cannot reach ONTAP API at https://$self->{mgmt_ip}:"
+            . " ${reason}${hint}\n";
+    }
+
     my $data = {};
     if ($content && $content =~ /^\s*[\{\[]/) {
         eval { $data = decode_json($content); };
@@ -135,6 +152,9 @@ sub _request {
 
     # async jobs return 202 Accepted
     if ($code == 202 && $data->{job}) {
+        # some operations legitimately outlive any polling budget (volume
+        # move): let the caller keep the job reference instead of following it
+        return $data if $opts->{no_job_follow};
         if ($self->{svm_scoped}) {
             # an SVM-scoped account cannot read the cluster-scoped
             # /cluster/jobs endpoint; the operation exceeded return_timeout but
@@ -210,6 +230,47 @@ sub _get_all_records {
     return \@all;
 }
 
+# Run $code with a temporarily lowered HTTP timeout (seconds). Used on the
+# pvestatd polling paths (status, check_connection) so a hung ONTAP API
+# degrades one storage's poll instead of stalling the daemon for the full
+# default timeout. LWP's timeout setter returns the previous value.
+sub with_timeout {
+    my ($self, $timeout, $code) = @_;
+
+    my $old = $self->{ua}->timeout($timeout);
+    my @res = eval { $code->() };
+    my $err = $@;
+    $self->{ua}->timeout($old);
+    die $err if $err;
+
+    return wantarray ? @res : $res[0];
+}
+
+# Lightweight reachability probe of the REST endpoint itself: any real HTTP
+# answer (even 401/403 — no credentials are sent) proves the API service and
+# its TLS are alive; an LWP-internal error (connection refused, timeout, TLS
+# verification failure) means it is not. A plain TCP probe cannot tell these
+# apart.
+sub probe {
+    my ($self) = @_;
+
+    my $alive = 0;
+    eval {
+        $self->with_timeout(
+            5,
+            sub {
+                my $req = HTTP::Request->new('GET', $self->{base_url});
+                my $resp = $self->{ua}->request($req);
+                $alive = 1
+                    if ($resp->header('Client-Warning') // '')
+                    ne 'Internal response';
+            },
+        );
+    };
+
+    return $alive;
+}
+
 # -- SVM ---------------------------------------------------------------
 
 sub get_svm_uuid {
@@ -241,6 +302,67 @@ sub get_volume_uuid {
     );
 
     return $vol ? $vol->{uuid} : undef;
+}
+
+# Look up a volume's UUID and its current snapshot policy name in one call, so a
+# caller reconciling the schedule can skip the PATCH when it is already correct.
+# Returns { uuid, name } or undef when the volume does not exist.
+sub get_volume_snapshot_policy {
+    my ($self, $vol_name) = @_;
+
+    my $svm = uri_escape($self->{vserver});
+    my $name = uri_escape($vol_name);
+    my $vol = $self->_first_record(
+        "/storage/volumes?name=$name"
+            . "&svm.name=$svm&fields=uuid,snapshot_policy.name",
+    );
+    return undef if !$vol;
+
+    return {
+        uuid => $vol->{uuid},
+        name => $vol->{snapshot_policy}{name} // '',
+    };
+}
+
+# List volumes (optionally by name pattern) with their creation time and
+# state, used by the stranded-object sweep to skip allocations that may still
+# be in flight and volumes parked offline (e.g. in the recovery queue).
+sub list_volumes_create_time {
+    my ($self, $pattern) = @_;
+
+    my $svm = uri_escape($self->{vserver});
+    my $q = "/storage/volumes?svm.name=$svm"
+        . "&fields=uuid,name,create_time,state";
+    $q .= "&name=" . uri_escape($pattern) if $pattern;
+
+    return $self->_get_all_records($q);
+}
+
+# List volumes (optionally by name pattern) with their used space and autosize
+# ceiling, used to warn before a volume fills up and ONTAP takes its namespace
+# offline.
+sub list_volume_autosize {
+    my ($self, $pattern) = @_;
+
+    my $svm = uri_escape($self->{vserver});
+    my $q = "/storage/volumes?svm.name=$svm"
+        . "&fields=name,space.used,autosize.maximum";
+    $q .= "&name=" . uri_escape($pattern) if $pattern;
+
+    return $self->_get_all_records($q);
+}
+
+# List volumes (optionally by name pattern) with their UUID and snapshot policy
+# name. Used to reconcile per-volume schedules when the storage policy changes.
+sub list_volume_snapshot_policies {
+    my ($self, $pattern) = @_;
+
+    my $svm = uri_escape($self->{vserver});
+    my $q = "/storage/volumes?svm.name=$svm"
+        . "&fields=uuid,name,snapshot_policy.name";
+    $q .= "&name=" . uri_escape($pattern) if $pattern;
+
+    return $self->_get_all_records($q);
 }
 
 sub create_volume {
@@ -307,7 +429,7 @@ sub create_volume {
     # thin namespace it hosts never goes offline on a full container. The
     # namespace itself is fixed-size; this only enlarges its container.
     if ($opts{autosize}) {
-        my $max_pct = int($opts{autosize_max_percent} || 200);
+        my $max_pct = int($opts{autosize_max_percent} || 300);
         $max_pct = 105 if $max_pct < 105;
         $body->{autosize} = {
             mode    => 'grow',
@@ -329,6 +451,45 @@ sub set_volume_autosize {
     );
 }
 
+# Configure ONTAP snapshot autodelete on a FlexVol (PATCH-only — ONTAP rejects
+# these fields at volume creation, error 262196). When the volume nears full,
+# ONTAP deletes the oldest snapshots first; snapshots whose name starts with
+# $defer_prefix are deferred to last resort. Autosize growth remains the first
+# response — autodelete engages when growing no longer suffices.
+sub set_volume_snapshot_autodelete {
+    my ($self, $vol_uuid, $enabled, $defer_prefix) = @_;
+
+    my $autodelete =
+        $enabled
+        ? {
+            enabled           => JSON::true,
+            trigger           => 'volume',
+            delete_order      => 'oldest_first',
+            defer_delete      => 'prefix',
+            prefix            => $defer_prefix,
+            commitment        => 'try',
+            target_free_space => 20,
+        }
+        : { enabled => JSON::false };
+
+    return $self->_patch(
+        "/storage/volumes/$vol_uuid",
+        { space => { snapshot => { autodelete => $autodelete } } },
+    );
+}
+
+# Set a FlexVol's own scheduled-snapshot policy. Used to clear a member
+# volume's schedule ('none') once the consistency group carries it, or to set a
+# per-volume schedule as a fallback for a disk that could not join the CG.
+sub set_volume_snapshot_policy {
+    my ($self, $vol_uuid, $policy) = @_;
+
+    return $self->_patch(
+        "/storage/volumes/$vol_uuid",
+        { snapshot_policy => { name => $policy } },
+    );
+}
+
 # Rename a FlexVol. The contained namespace path follows the new volume name.
 sub set_volume_name {
     my ($self, $vol_uuid, $new_name) = @_;
@@ -340,7 +501,7 @@ sub set_volume_name {
 }
 
 sub delete_volume {
-    my ($self, $vol_uuid) = @_;
+    my ($self, $vol_uuid, $force) = @_;
 
     eval {
         $self->_patch(
@@ -349,12 +510,15 @@ sub delete_volume {
         );
     };
 
-    # force=true removes the volume completely rather than parking it in the
-    # ONTAP volume recovery queue. The recovery queue would otherwise keep a
-    # deleted FlexClone pinning its base image (purgeable only by the cluster
-    # admin), blocking template deletion for SVM-scoped accounts. A
-    # PVE-deleted disk is meant to be gone, so this is the right semantics.
-    my $res = eval { $self->_delete("/storage/volumes/$vol_uuid?force=true"); };
+    # Without $force the volume is parked in the ONTAP volume recovery queue
+    # (recoverable by the cluster admin for the retention period) — the safe
+    # default for disks that held real data. With $force it is removed
+    # immediately and permanently; callers use that for rollback of half-
+    # provisioned volumes, or when the storage sets force_delete (a parked
+    # FlexClone pins its base image until purged, which blocks template
+    # deletion for SVM-scoped accounts).
+    my $q = $force ? '?force=true' : '';
+    my $res = eval { $self->_delete("/storage/volumes/$vol_uuid$q"); };
     if (my $err = $@) {
         # never leave the volume stranded offline on a failed delete
         eval {
@@ -375,6 +539,55 @@ sub resize_volume {
     return $self->_patch(
         "/storage/volumes/$vol_uuid",
         { size => int($new_size) },
+    );
+}
+
+# Read one job's state. Works for the caller's own jobs even on SVM-scoped
+# accounts (verified live: vsadmin can read the job it just created, while the
+# /cluster/jobs collection stays forbidden).
+sub get_job {
+    my ($self, $job_uuid) = @_;
+
+    return $self->_get("/cluster/jobs/$job_uuid");
+}
+
+# Start relocating a FlexVol to another aggregate (ONTAP volume move) and
+# return the job uuid. Non-disruptive and potentially hours-long, so the job
+# is not followed — callers poll get_job() briefly to catch an early
+# authorization failure (SVM-scoped accounts cannot move volumes).
+sub move_volume_aggregate {
+    my ($self, $vol_uuid, $aggr_name) = @_;
+
+    my $res = $self->_request(
+        'PATCH',
+        "/storage/volumes/$vol_uuid",
+        { movement => { destination_aggregate => { name => $aggr_name } } },
+        { no_job_follow => 1 },
+    );
+
+    return $res->{job}{uuid};
+}
+
+# Apply a QoS policy group to a FlexVol (used when a disk is handed off to a
+# storage configured with a different QoS class).
+sub set_volume_qos_policy {
+    my ($self, $vol_uuid, $policy) = @_;
+
+    return $self->_patch(
+        "/storage/volumes/$vol_uuid",
+        { qos => { policy => { name => $policy } } },
+    );
+}
+
+# Bring a FlexVol back online (e.g. after ONTAP offlined it on a full volume/
+# aggregate and the operator has freed space). The contained namespace becomes
+# reachable again once its volume is online.
+sub set_volume_online {
+    my ($self, $vol_uuid) = @_;
+
+    return $self->_patch(
+        "/storage/volumes/$vol_uuid",
+        { state => "online" },
     );
 }
 
@@ -609,12 +822,25 @@ sub get_consistency_group {
     return $self->_first_record(
         "/application/consistency-groups"
             . "?svm.name=$svm&name=$name"
-            . "&fields=uuid,name,volumes",
+            . "&fields=uuid,name,volumes,snapshot_policy",
     );
 }
 
+# List consistency groups (optionally by name pattern) with their UUID, member
+# volumes and snapshot policy. Used to reconcile CG schedules on a policy change.
+sub list_consistency_groups {
+    my ($self, $pattern) = @_;
+
+    my $svm = uri_escape($self->{vserver});
+    my $q = "/application/consistency-groups?svm.name=$svm"
+        . "&fields=uuid,name,volumes,snapshot_policy";
+    $q .= "&name=" . uri_escape($pattern) if $pattern;
+
+    return $self->_get_all_records($q);
+}
+
 sub create_consistency_group {
-    my ($self, $cg_name, $volume_names) = @_;
+    my ($self, $cg_name, $volume_names, $snap_policy) = @_;
 
     my @volumes = map {
         { name => $_, provisioning_options => { action => "add" } }
@@ -626,9 +852,30 @@ sub create_consistency_group {
     };
     $body->{volumes} = \@volumes if @volumes;
 
+    # Scheduled snapshots are taken at the CG level so they are atomic across
+    # all member volumes (ONTAP fences I/O across the CG). The member FlexVols
+    # therefore carry no schedule of their own. 'none' is a valid built-in
+    # policy and is sent explicitly so the CG never inherits an unexpected
+    # scheduled policy from the SVM default.
+    $body->{snapshot_policy} = { name => $snap_policy }
+        if defined($snap_policy);
+
     return $self->_post(
         "/application/consistency-groups?return_records=true",
         $body,
+    );
+}
+
+# Set (or change) the consistency group's scheduled-snapshot policy. Scheduled
+# CG snapshots are atomic across all member volumes, unlike independent
+# per-volume snapshot policies. Used to keep the CG in sync with the storage
+# config and to upgrade a CG created before a policy was set on it.
+sub set_consistency_group_snapshot_policy {
+    my ($self, $cg_uuid, $policy) = @_;
+
+    return $self->_patch(
+        "/application/consistency-groups/$cg_uuid",
+        { snapshot_policy => { name => $policy } },
     );
 }
 
@@ -700,6 +947,21 @@ sub get_cg_snapshot_by_name {
     my $snaps = $self->list_cg_snapshots($cg_uuid, $snap_name);
 
     return @$snaps ? $snaps->[0] : undef;
+}
+
+# Fetch one CG snapshot by name including its member-volume set and partial
+# flag — used to validate that a restore still matches the CG's current
+# membership before reverting anything.
+sub get_cg_snapshot_detail {
+    my ($self, $cg_uuid, $snap_name) = @_;
+
+    my $name = uri_escape($snap_name);
+
+    return $self->_first_record(
+        "/application/consistency-groups/$cg_uuid/snapshots"
+            . "?name=$name&fields=uuid,name,create_time,is_partial,"
+            . "snapshot_volumes.volume.name",
+    );
 }
 
 sub delete_cg_snapshot {

@@ -5,6 +5,162 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3-1] - 2026-06-10
+
+Hardening informed by the business-continuity threat
+
+### Changed
+
+- **Deleted disks now go through the ONTAP volume recovery queue by default**
+  (admin-recoverable for the retention period) instead of being destroyed
+  immediately. Set the new `force_delete 1` storage option to restore the old
+  irreversible behaviour. Note: a recovery-queue-parked FlexClone pins its base
+  image until purged/expired, which can delay template deletion.
+- **`path()` fails loudly instead of returning a placeholder.** A namespace
+  that is offline on ONTAP now produces an error naming the cause; a device
+  not yet visible is awaited with backoff (1+2+4+8 s) after the fabric
+  connect, then fails with a clear fabric error instead of handing QEMU a
+  nonexistent `/dev/ontap-nvme-pending/...` path.
+- **NVMe/TCP connection check matches portal addresses.** `activate_storage`/
+  `activate_volume` no longer short-circuit on *any* NVMe/TCP controller: a
+  leftover connection to another array no longer masks a missing connection to
+  this storage's portals.
+- `check_connection` probes the REST endpoint over HTTPS (service + TLS
+  health) instead of a bare TCP connect, and `status()` runs with a 10 s
+  timeout so a hung ONTAP API degrades one storage instead of stalling the
+  pvestatd poll loop.
+- New SVM-scoped storages (`svm_scoped 1`) require `svm_capacity` at
+  `pvesm add` time; existing ones log a warning at activation.
+- **Default `autosize_max_percent` raised from 200 to 300.** Live fill tests
+  showed the 200% ceiling equals roughly a single fully-rewritten snapshot
+  generation: with any snapshot retention and sustained writes it is reached
+  quickly, and ONTAP then refuses writes (VM I/O errors). 300% gives headroom
+  for about two pinned generations. Applies to newly created volumes and to
+  ceilings recomputed on resize; explicitly configured values are unchanged.
+
+### Added
+
+- **Cluster-wide per-VM locking.** All consistency-group mutations (snapshot
+  create/rollback/delete, membership changes, CG cleanup, cross-VM disk moves)
+  are serialized on a pmxcfs lock keyed by SVM + VMID, closing the cross-node
+  races that could lose a backup snapshot mid-delete, leave duplicate
+  same-named snapshots, or strand a disk outside its CG.
+- **Snapshot membership verification.** A CG snapshot is only taken/restored
+  from a disk that is actually a CG member; a non-member disk gets a
+  per-volume snapshot with a loud warning instead of being silently left out
+  of a "successful" CG snapshot.
+- **Restore topology guard.** A CG rollback is refused — with an explicit
+  error — when the snapshot does not cover all current member volumes (a disk
+  added after the snapshot) or is marked partial on ONTAP: restoring would
+  revert those disks to an unrelated state and delete every newer snapshot.
+- **VM start survives a management-API outage.** `path()` consults a local
+  namespace→device cache (matched by UUID against live sysfs) before any REST
+  call, so previously seen disks can start/migrate while the ONTAP management
+  LIF is down; the NVMe data path does not need it.
+- **SVM-scoped async verification.** Operations that ONTAP may complete
+  asynchronously where the account cannot poll the job (202) are now confirmed
+  by polling the object itself: CG snapshot creation fails loudly if it cannot
+  be verified, CG membership warns when the join is unconfirmed.
+- **Capacity awareness.** New allocations are refused when they obviously
+  cannot fit (aggregate free space, or the `svm_capacity` budget); `status()`
+  warns when a FlexVol passes 90% of its autosize ceiling — once per volume,
+  swept at most every 5 minutes per storage — before ONTAP offlines its
+  namespace.
+- **Stale-CG hygiene.** Deleting a VM's last disk also purges the CG's
+  `pve_snap_*` snapshots so the empty CG can actually be deleted; adopting an
+  empty leftover CG (VMID reuse) purges the previous owner's snapshots so they
+  cannot leak to the new VM.
+- **Stranded-object sweep.** `activate_storage` scans hourly (best-effort) for
+  leftovers of interrupted operations: FlexVols without a namespace inside
+  (an allocation that died mid-provisioning — invisible to PVE, warned with
+  the `pvesm free` remedy), base volumes missing their `pve_base` snapshot
+  (templating crashed mid-way — linked clones would fail), and empty
+  consistency groups, which are reaped outright under the per-VM lock.
+- NVMe/TCP-TLS pre-flight in `activate_storage`: activation fails fast when
+  `tlshd` is not running or no NVMe TLS PSK is present in the kernel keyring —
+  either condition silently hangs TLS connections and the VM I/O behind them.
+- `Api`: `set_volume_online` (recovery helper), `with_timeout`, `probe`,
+  `get_cg_snapshot_detail`, `list_volume_autosize`, and discrimination of
+  connect/TLS failures with actionable certificate diagnostics instead of a
+  generic ONTAP error.
+- **`ontapnvme-move` helper: copy-less disk moves between storages.** For two
+  ontapnvme storages on the same SVM (distinct prefixes/aggregates), the
+  bundled CLI renames the FlexVol to the target prefix, moves CG membership,
+  reapplies the target's snapshot/QoS/autodelete settings, rewrites the VM
+  config (snapshot sections included) and starts a non-disruptive ONTAP
+  `volume move` to the target aggregate — ONTAP snapshots, FlexClone lineage
+  and the namespace identity are preserved, nothing is copied (PVE's
+  `qm move-disk` copies block by block and loses the snapshots). VM must be
+  stopped; physical relocation requires cluster-scoped credentials (verified
+  live: SVM-scoped accounts get the ownership handoff plus a warning);
+  interrupted runs resume safely. New Api methods: `move_volume_aggregate`,
+  `get_job`, `set_volume_qos_policy`. `list_images` now matches namespaces by
+  their containing volume name only — a namespace keeps its original name when
+  its volume is renamed, so a handed-off disk was invisible in the target
+  storage's listing (found in live testing).
+- **`snapshot_autodelete` option (default off).** When a FlexVol nears full
+  despite autosize, ONTAP deletes the oldest snapshots instead of refusing
+  writes (which the VM experiences as I/O errors — observed live with a 5-min
+  snapshot policy under continuous rewrites). Plugin-managed snapshots
+  (`pve_snap_*`, `pve_base`) are deferred to last resort via a name-prefix
+  rule, so scheduled-policy snapshots are sacrificed first; if pressure ever
+  reaches a `pve_snap_*`, the PVE snapshot tree desynchronizes for that
+  snapshot — documented, with capacity-sizing guidance preferred
+  (`autosize_max_percent ≥ 100 + churn% × retained copies`). Applied to new
+  volumes and clones; toggling the option reconciles all existing volumes
+  immediately from the update hook. New Api method
+
+### Fixed
+
+- Cross-node consistency-group create race: the losing node now converges on
+  the winner's CG instead of silently leaving its disk outside the CG —
+  excluded from atomic snapshots.
+- `pvesm remove` refuses to delete the storage's secrets while volumes still
+  exist on ONTAP (the credentials are the only way to keep managing them);
+  removal still proceeds when the backend is unreachable.
+- Changing NVMe auth secrets now logs a loud warning that host-NQN
+  re-registration briefly interrupts the node's access to the whole subsystem.
+- Deleting a PVE snapshot now removes **all** same-named ONTAP snapshots (CG
+  and per-volume): duplicates from a create race or a CG/per-volume fallback
+  mix no longer survive a delete and silently shadow a later same-named
+  snapshot.
+- Rollback of a half-provisioned disk retries once before giving up, and the
+  final warning states explicitly that the volume remains on ONTAP.
+- A failed `pvesm set --snapshot_policy` reconcile now ends with one summary
+  warning listing exactly which CGs/volumes still run the previous schedule.
+- The immediate snapshot-policy reconcile from the update hooks now derives
+  the new policy from the update itself: the hooks receive the pre-update
+  storage config, so the previous code pushed the stale value to ONTAP
+  (found in integration testing on PVE 9.1).
+- `pvesm add` now persists `shared 1` into `storage.cfg` (unless `--shared 0`
+  is given): the plugin-level shared default declared in `plugindata()` is not
+  honoured by PVE 9.1's migration volume scan, which treated the disks as
+  local and refused live migration (found in integration testing; existing
+  storages need a one-time `pvesm set <storeid> --shared 1`).
+
+## [1.2-1] - 2026-06-09
+
+### Changed
+
+- **Scheduled snapshots are now atomic across a VM's disks.** The
+  `snapshot_policy` is applied to the VM's ONTAP consistency group instead of to
+  each FlexVol, so policy-driven snapshots are crash-consistent across all of the
+  VM's disks (ONTAP fences I/O across the CG). Member FlexVols are kept at
+  `snapshot_policy none` so they are not snapshotted twice. On ONTAP < 9.12.1, a
+  disk that cannot join the CG falls back to a per-volume schedule (still
+  protected, just not crash-consistent with its siblings). Base templates carry
+  no schedule.
+- **Changing `snapshot_policy` reconciles immediately.** `pvesm set <storage>
+  --snapshot_policy …` now pushes the new schedule to all of the storage's
+  existing consistency groups and volumes from the update hook, instead of
+  waiting for the next disk operation on each VM. Bounded (one CG + one volume
+  listing, writes only on a real difference) and best-effort (a config update
+  never fails if ONTAP is briefly unreachable).
+
+  New `Api` methods: `set_consistency_group_snapshot_policy`,
+  `set_volume_snapshot_policy`, `get_volume_snapshot_policy`,
+  `list_consistency_groups`, `list_volume_snapshot_policies`.
+
 ## [1.1-2] - 2026-06-01
 
 Community contributions on top of 1.1-1 (thanks

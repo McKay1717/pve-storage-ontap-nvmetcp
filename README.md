@@ -128,7 +128,7 @@ pvesm add ontapnvme myontap \
 | `ontap_portal`       | NVMe/TCP target portal — IPv4, IPv6 or FQDN (overrides auto-discovery); a FQDN resolves preferring IPv6 | auto |
 | `ontap_portal2`      | Secondary portal (IPv4/IPv6/FQDN) for multipath      | —        |
 | `storage_prefix`     | Prefix for ONTAP object names (e.g. `pve_`)          | —        |
-| `snapshot_policy`    | ONTAP snapshot policy                                 | `none`   |
+| `snapshot_policy`    | ONTAP scheduled-snapshot policy — applied to the VM's consistency group so scheduled snapshots are atomic across all its disks | `none`   |
 | `encryption`         | Volume encryption (`1` NVE/NAE, `0` off)              | inherit  |
 | `space_reserve`      | Space guarantee: `none` (thin) or `volume` (thick)    | `none`   |
 | `qos_policy`         | QoS policy group                                      | —        |
@@ -136,9 +136,11 @@ pvesm add ontapnvme myontap \
 | `snapshot_reserve`   | Snapshot reserve percent (0–90)                       | auto     |
 | `tiering_policy`     | FabricPool tiering policy                             | —        |
 | `autosize`           | Let the hosting FlexVol auto-grow (snapshot safety)   | `1`      |
-| `autosize_max_percent`| Max FlexVol auto-grow, % of initial size             | `200`    |
+| `autosize_max_percent`| Max FlexVol auto-grow, % of initial size             | `300`    |
 | `svm_scoped`         | Use an SVM-scoped ONTAP account (no cluster API calls)| `0`      |
-| `svm_capacity`       | Logical capacity (GiB) for `status()` in svm_scoped   | auto     |
+| `svm_capacity`       | Logical capacity (GiB) for `status()` in svm_scoped — **required** for new svm_scoped storages | — |
+| `snapshot_autodelete`| Let ONTAP reap the oldest snapshots when a volume nears full instead of refusing writes (plugin snapshots deferred to last resort) | `0` |
+| `force_delete`       | Bypass the ONTAP volume recovery queue on disk delete (immediate, irreversible) | `0` |
 | `verify_ssl`         | Verify ONTAP TLS certificate                          | `1`      |
 | `nvme_dhchap_secret` | DH-HMAC-CHAP host secret — NVMe in-band auth (sensitive) | —     |
 | `nvme_dhchap_ctrl_secret`| Controller secret for bidirectional DH-HMAC-CHAP (sensitive) | — |
@@ -232,9 +234,12 @@ security login rest-role create -vserver <svm> -role pve-ontap-nvme -api /api/sv
 security login create -vserver <svm> -user-or-group-name pve-ontap -application http -authentication-method password -role pve-ontap-nvme
 ```
 
-Then add `--svm_scoped 1` to `pvesm add` (and optionally `--svm_capacity <GiB>`
-for a meaningful free-space gauge — without it, `status()` reports the sum of
-provisioned volume sizes, which reads 0 on an empty SVM).
+Then add `--svm_scoped 1 --svm_capacity <GiB>` to `pvesm add`. `svm_capacity`
+is **required** for new SVM-scoped storages: an SVM-scoped account cannot see
+physical aggregate space, so without an explicit (conservative) logical
+capacity, `status()` reports the sum of provisioned volume sizes — which reads
+0 on an empty SVM and can mask a filling aggregate until namespaces go offline.
+Size it with headroom for snapshots and for other SVMs sharing the aggregate.
 
 > ¹ If you pre-create the NVMe subsystem **and** register every PVE node's host
 > NQN yourself, you can narrow `/api/protocols/nvme/subsystems` to `readonly`.
@@ -289,6 +294,13 @@ Each node's host NQN is registered with the secret; `nvme connect` then
 authenticates (verified: a connection without the secret is refused).
 `--dhchap-ctrl-secret` on `nvme connect-all` needs a recent `nvme-cli`.
 
+> [!WARNING]
+> Changing NVMe auth secrets re-registers each node's host NQN on the subsystem
+> (remove + add): during that window the node's access to **all** namespaces in
+> the subsystem is interrupted. Apply auth changes in a maintenance window —
+> migrate or stop the node's VMs first, then re-activate the storage node by
+> node.
+
 **NVMe/TCP-TLS (TLS 1.3)** (ONTAP 9.16+) — encrypts the data connection:
 
 ```bash
@@ -298,7 +310,10 @@ pvesm set myontap --nvme_tls 1 --nvme_tls_psk 'NVMeTLSkey-1:01:…:'
 Each PVE node also needs a TLS-capable kernel, a running `tlshd`, and an
 `nvme-cli` with TLS / `gen-tls-key` support. The plugin sets the PSK on the
 ONTAP host entry and best-effort-loads it into the node keyring; on older
-`nvme-cli` provision it manually (`nvme gen-tls-key --insert`).
+`nvme-cli` provision it manually (`nvme gen-tls-key --insert`). Storage
+activation fails fast when `tlshd` is not running or no NVMe TLS PSK is present
+in the kernel keyring — either condition would otherwise make NVMe/TCP-TLS
+connections (and the VM I/O behind them) hang with no visible cause.
 
 > [!NOTE]
 > TLS adds CPU cost. On **ONTAP 9.19.1+** with a supported NIC (CX6-Dx / CX7)
@@ -314,6 +329,37 @@ ONTAP host entry and best-effort-loads it into the node keyring; on older
 pvesm status -storage myontap
 nvme list
 ```
+
+### Capacity planning (thin provisioning and snapshots)
+
+Disks are thin by default (`space_reserve none`) and each FlexVol may
+auto-grow up to `autosize_max_percent` (default 300%) of its initial size.
+Snapshots consume that headroom: when the ceiling — or the aggregate — is
+reached, ONTAP refuses further writes (the VM sees I/O errors; on older ONTAP
+the namespace may go offline). The plugin warns in the journal when a volume
+passes 90% of its autosize ceiling and refuses new allocations that obviously
+cannot fit, but capacity still has to be planned. The levers, in order:
+
+1. **Size the ceiling against churn × retention** — each retained snapshot
+   pins roughly the data rewritten since the previous one, so
+   `autosize_max_percent ≥ 100 + rewrite-rate% × retained copies`. The 300%
+   default absorbs about two fully-rewritten pinned generations and fits
+   typical VM churn with hourly/daily policies; short schedules on
+   write-heavy disks need more (up to 1000).
+2. **Tune the policy's retention** (`count`) — it is the multiplier.
+3. **`snapshot_autodelete 1`** — ONTAP reaps the oldest snapshots when the
+   volume nears full *despite* autosize, instead of refusing writes.
+   Plugin-managed snapshots (`pve_snap_*`, `pve_base`) are deferred to last
+   resort, so scheduled-policy snapshots are sacrificed first. Caveat: if
+   pressure is high enough to reach a `pve_snap_*`, the PVE snapshot tree
+   desynchronizes (that snapshot can no longer be rolled back/deleted from
+   PVE) — prefer lever 1 for correct sizing, use this as the safety valve.
+4. **`space_reserve volume`** (thick) for VMs that must never see a refused
+   write — ONTAP guarantees overwrite space at ~2× the provisioned size.
+
+Also alert on aggregate fill from the ONTAP side (e.g. at 80%), and in
+`svm_scoped` mode set `svm_capacity` conservatively. Guest `discard` does not
+help against snapshot pinning — freed blocks stay referenced by snapshots.
 
 ### Multi-tier / multi-aggregate setup
 
@@ -343,20 +389,67 @@ pvesm add ontapnvme ontap-silver \
 ```
 
 > [!IMPORTANT]
-> Give each storage a **distinct `storage_prefix`**. The plugin identifies its
-> volumes by name within the SVM (`list_images` filters by name + prefix, not
-> by aggregate). Two storages on the same SVM **without** distinct prefixes
-> would see and claim each other's namespaces, corrupting per-storage listing
-> and space reporting.
+> **Two storages on the same SVM MUST have distinct `storage_prefix` values —
+> running them without (or with the same) prefix is unsupported and corrupts
+> both.** The plugin identifies every ONTAP object by *name within the SVM*, not
+> by aggregate, so a different `aggregate` does **not** keep two storages apart.
+> Without distinct prefixes they collide on three axes:
+>
+> - **Consistency-group name** — the CG is `<prefix>pve_cg_vm_<vmid>`, so two
+>   prefix-less storages compute the *same* CG for a given VM and fight over its
+>   membership and snapshot policy.
+> - **Volume listing** — `list_images` matches `<prefix>vm_*` in the SVM, so each
+>   storage lists (and claims) the *other's* disks; per-storage space reporting
+>   is wrong even if the two never share a VM.
+> - **Policy reconcile** — `pvesm set --snapshot_policy` sweeps `<prefix>*`
+>   objects, so a prefix-less change rewrites the other storage's CG and volume
+>   policies.
+>
+> A distinct prefix scopes all three (CG name, listing, reconcile) cleanly. Use
+> different SVMs only as an alternative isolation boundary.
 
 > [!NOTE]
 > A single NVMe subsystem can be shared by both storages (common host access).
 > QoS/snapshot policies are applied **per storage** (so per tier) and must
 > already exist on ONTAP; `qos_policy` and `adaptive_qos_policy` are mutually
-> exclusive. Atomic multi-disk snapshots are scoped to one storage: a VM with
-> disks on both tiers gets one consistency group per tier, not a single
-> cross-tier one. Moving a disk between tiers (`qm move-disk`) copies the data
-> (it is not an ONTAP non-disruptive `volume move`).
+> exclusive. Moving a disk between tiers with `qm move-disk` copies the data
+> block by block and **loses the ONTAP snapshots** — use the bundled
+> `ontapnvme-move` helper instead for a copy-less handoff (see below).
+
+### Moving disks between ontapnvme storages without copying
+
+```bash
+ontapnvme-move <vmid> <disk> <target-storage> [--no-relocate]
+# e.g.  ontapnvme-move 100 scsi0 ontap-silver
+```
+
+For two storages on the **same SVM** (distinct prefixes), the helper renames
+the disk's FlexVol to the target prefix, moves its consistency-group
+membership, reapplies the target's `snapshot_policy`/QoS/`snapshot_autodelete`,
+rewrites the VM config (snapshot sections included) and starts an ONTAP
+`volume move` to the target aggregate — non-disruptive, with **ONTAP
+snapshots, FlexClone lineage and the namespace identity preserved**. Nothing
+is copied.
+
+Requirements and limits: the VM must be **stopped**; base images and linked
+clones are refused (they must stay with their prefix family); the physical
+relocation needs **cluster-scoped ONTAP credentials** (Mode A) — on an
+SVM-scoped storage (Mode B) the helper performs the ownership handoff and
+warns that the data stays on the source aggregate (`--no-relocate` makes that
+explicit). Interrupted runs are safe to re-run: the helper resumes where it
+stopped.
+
+> [!WARNING]
+> **A VM with disks spread across two storages does not get a single
+> cross-storage atomic snapshot.** Each storage manages its own consistency group
+> (`<prefix>pve_cg_vm_<vmid>`), so a snapshot is atomic *within* each storage's
+> disks but the two CGs are not coordinated to the same instant. Because
+> `aggregate` is fixed per storage (one storage places on exactly one aggregate),
+> spanning a VM across two aggregates necessarily means two storages and two CGs.
+> Keep all of a VM's disks on **one** storage if you need a single
+> crash-consistent snapshot across them. (A shared parent CG spanning both
+> storages — ONTAP nested consistency groups — could lift this; it is not
+> implemented today.)
 
 ## How it works
 
@@ -374,6 +467,16 @@ Snapshots are created at the ONTAP consistency group level for atomic multi-disk
 consistency. If the CG is not available, the plugin falls back to per-volume
 snapshots. All snapshot operations (create, rollback, delete) follow this
 CG-first strategy.
+
+This applies to **scheduled** snapshots too: the `snapshot_policy` is set on the
+VM's consistency group, not on the individual FlexVols, so policy-driven
+snapshots are atomic across all of the VM's disks (ONTAP fences I/O across the CG
+during the snapshot). The member FlexVols therefore carry no schedule of their
+own — they would otherwise be snapshotted twice. On ONTAP < 9.12.1 a disk that
+cannot join the CG keeps a per-volume schedule as a fallback (still protected,
+just not crash-consistent with its siblings). Changing `snapshot_policy` later
+reconciles all of the storage's CGs and volumes immediately, from the storage
+update hook (`pvesm set <storage> --snapshot_policy …`).
 
 > [!IMPORTANT]
 > **Atomic multi-disk snapshots require ONTAP 9.12.1+.** Adding a disk to an
@@ -424,14 +527,18 @@ During migration, the target node connects to the ONTAP namespaces via
 yet visible). No data is copied — only VM memory state is transferred between
 nodes.
 
-> [!NOTE]
-> If migrating from a pre-1.0-4 installation, verify that `shared 1` is
-> present in your storage configuration:
+> [!IMPORTANT]
+> **`shared 1` must be present in the storage configuration** or PVE treats the
+> disks as local and refuses `qm migrate --online` ("can't live migrate
+> attached local disks"). Storages created with 1.3-1+ get `shared 1` written
+> to `storage.cfg` automatically at `pvesm add` time; for storages created
+> with older versions, verify and fix:
 > ```bash
-> grep -A5 'ontapnvme:' /etc/pve/storage.cfg
-> # should show: shared 1
+> grep -A5 'ontapnvme:' /etc/pve/storage.cfg   # should show: shared 1
+> pvesm set <storeid> --shared 1               # if missing
 > ```
-> New installations with 1.0-4+ get `shared 1` automatically.
+> (The plugin-level `shared` default declared since 1.0-4 is not honoured by
+> the migration volume scan on PVE 9.1 — only the explicit config entry is.)
 
 ## Troubleshooting
 
@@ -444,6 +551,7 @@ nodes.
 | connection refused / timeout on port 443 | mgmt LIF without `management-https`, or wrong subnet/VLAN | enable the service; check the LIF's subnet/VLAN |
 | `certificate verify failed` | `verify_ssl 1` (default) with a self-signed cert | install a trusted CA cert, or set `verify_ssl 0` (lab only) |
 | `subsystem '<name>' not found` | insufficient NVMe privileges (Mode B role) | grant `/api/protocols/nvme/subsystems` = `all` |
+| template delete fails with a dependent-clone error | deleted linked clones are parked in the ONTAP volume recovery queue (default `force_delete 0`) and pin their base image | wait for queue expiry, have the ONTAP admin run `volume recovery-queue purge`, or set `force_delete 1` |
 
 ### Debug logging
 

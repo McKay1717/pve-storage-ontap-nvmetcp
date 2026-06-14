@@ -31,6 +31,7 @@ Thumbs.db
 # Vendored upstream reference clones — local reference only, NEVER commit
 /pve-common/
 /pve-storage/
+/qemu-server/
 /pve-storage-plugin-examples/
 
 # ONTAP REST API spec — large untracked local reference only

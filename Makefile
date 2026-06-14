@@ -1,6 +1,6 @@
 PACKAGE = pve-storage-ontap-nvmetcp
-VERSION = 1.1
-PKGREL = 2
+VERSION = 1.3
+PKGREL = 1
 ARCH = all
 
 DESTDIR =
@@ -27,6 +27,8 @@ install:
 		$(DESTDIR)$(PERLDIR)/PVE/Storage/Custom/OntapNvmeTcpPlugin.pm
 	install -m 0644 PVE/Storage/OntapNvmeTcp/Api.pm \
 		$(DESTDIR)$(PERLDIR)/PVE/Storage/OntapNvmeTcp/Api.pm
+	install -d $(DESTDIR)$(PREFIX)/sbin
+	install -m 0755 bin/ontapnvme-move $(DESTDIR)$(PREFIX)/sbin/ontapnvme-move
 
 .PHONY: deb $(DEB)
 deb $(DEB):
