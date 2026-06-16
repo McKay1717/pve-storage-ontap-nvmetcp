@@ -379,10 +379,18 @@ sub create_volume {
         snapshot_policy => { name => $snap_policy },
     };
 
-    # snapshot reserve
+    # snapshot reserve. A scheduled snapshot policy lives on the consistency
+    # group, not on the member volume, so the volume's own policy can be 'none'
+    # while snapshots still land on it — size the reserve from schedule_active
+    # (whether any schedule is configured) rather than from this volume's own
+    # policy. Falls back to the volume policy when the caller does not say.
+    my $schedule_active =
+        defined($opts{schedule_active})
+        ? $opts{schedule_active}
+        : ($snap_policy ne 'none');
     my $snap_pct = defined($opts{snapshot_reserve})
         ? int($opts{snapshot_reserve})
-        : ($snap_policy eq 'none' ? 0 : 5);
+        : ($schedule_active ? 5 : 0);
     $body->{space} = {
         snapshot => { reserve_percent => $snap_pct },
     };
