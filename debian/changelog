@@ -1,3 +1,16 @@
+pve-storage-ontap-nvmetcp (1.3-2) stable; urgency=medium
+
+  * fix: eliminate duplicate scheduled snapshots. A new disk's FlexVol was
+    created carrying the configured snapshot_policy while the same policy was
+    also set on the VM's consistency group, so both fired and the disk was
+    snapshotted twice (until a best-effort reconcile cleared the volume, and
+    permanently in any path where it did not). Member volumes are now created
+    with policy 'none' — the consistency group is the sole owner of the
+    scheduled-snapshot policy — and the snapshot reserve is sized from whether
+    a schedule is configured. Verified live on PVE 9.1 / ONTAP 9.17.1.
+
+ -- Nicolas I. (McKay1717) <https://github.com/McKay1717>  Tue, 16 Jun 2026 12:00:00 +0200
+
 pve-storage-ontap-nvmetcp (1.3-1) stable; urgency=medium
 
   * feat: cluster-wide per-VM locking (pmxcfs, keyed SVM+VMID) around all
