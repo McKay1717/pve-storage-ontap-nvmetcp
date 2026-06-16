@@ -112,6 +112,13 @@ Hardening informed by the business-continuity threat
 
 ### Fixed
 
+- **Duplicate scheduled snapshots eliminated.** A new disk's FlexVol was
+  created carrying the configured `snapshot_policy` *and* the policy was set on
+  the consistency group, so until `_apply_snapshot_schedule` cleared the volume
+  (and in any path where it did not) both fired and the disk was snapshotted
+  twice. Member volumes are now created with policy `none` from the start — the
+  consistency group is the sole owner of the scheduled-snapshot policy — while
+  the snapshot reserve is still sized from whether a schedule is configured.
 - Cross-node consistency-group create race: the losing node now converges on
   the winner's CG instead of silently leaving its disk outside the CG —
   excluded from atomic snapshots.

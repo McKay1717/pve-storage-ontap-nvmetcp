@@ -336,9 +336,20 @@ sub _snap_epoch {
 sub _vol_create_opts {
     my ($scfg) = @_;
 
+    my $policy = $scfg->{snapshot_policy} || 'none';
+
     return (
         aggregate            => $scfg->{aggregate},
-        snapshot_policy      => $scfg->{snapshot_policy} || 'none',
+        # The scheduled-snapshot policy belongs to the VM's consistency group
+        # (atomic across its disks); the member volume must carry 'none' or it
+        # would be snapshotted twice — once by the CG, once by its own policy.
+        # Create it with 'none' from the start so there is never a window, nor
+        # a path, where both fire. schedule_active still sizes the snapshot
+        # reserve because the CG's snapshots consume space on this volume.
+        # (_apply_snapshot_schedule sets a per-volume policy only as the
+        # ONTAP < 9.12.1 fallback, where the disk could not join the CG.)
+        snapshot_policy      => 'none',
+        schedule_active      => ($policy ne 'none') ? 1 : 0,
         encryption           => $scfg->{encryption},
         space_reserve        => $scfg->{space_reserve} || 'none',
         qos_policy           => $scfg->{qos_policy},
